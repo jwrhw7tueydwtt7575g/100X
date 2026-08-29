@@ -90,6 +90,8 @@ async def create_report(
         description=payload.description,
         reporter_phone=payload.reporter_phone,
         last_seen_location=payload.last_seen_location,
+        latitude=payload.latitude,
+        longitude=payload.longitude,
         session_id=session_uuid,
         status="OPEN",
     )
@@ -102,6 +104,8 @@ async def create_report(
         reference_id=report.reference_id,
         incident_type=report.incident_type,
         last_seen_location=report.last_seen_location,
+        latitude=report.latitude,
+        longitude=report.longitude,
     )
     await _notify_dashboard(report)
     return _to_response(report, lang)
@@ -144,6 +148,12 @@ async def get_report(
 
 
 def _to_response(report: LostFoundReport, language: str) -> LostFoundResponse:
+    from app.models.schemas import GeoPoint
+
+    loc = None
+    if report.latitude is not None and report.longitude is not None:
+        loc = GeoPoint(lat=report.latitude, lon=report.longitude)
+
     return LostFoundResponse(
         reference_id=report.reference_id,
         status=t(STATUS_LABELS.get(report.status, "lost_found_status_open"), language),
@@ -152,6 +162,7 @@ def _to_response(report: LostFoundReport, language: str) -> LostFoundResponse:
         incident_type=report.incident_type,  # type: ignore[arg-type]
         description=report.description,
         last_seen_location=report.last_seen_location,
+        location=loc,
         created_at=report.created_at,
         updated_at=report.updated_at,
     )
@@ -167,17 +178,21 @@ async def _notify_dashboard(report: LostFoundReport) -> None:
     if client is None:
         return
     try:
+        data: dict[str, str | float | None] = {
+            "reference_id": report.reference_id,
+            "incident_type": report.incident_type,
+            "description": report.description,
+            "last_seen_location": report.last_seen_location,
+            "reporter_phone": report.reporter_phone,
+            "created_at": report.created_at.isoformat(),
+        }
+        if report.latitude is not None and report.longitude is not None:
+            data["location"] = {"latitude": report.latitude, "longitude": report.longitude}
+
         await client.publish(
             LOST_FOUND_CHANNEL,
             json.dumps(
-                {
-                    "reference_id": report.reference_id,
-                    "incident_type": report.incident_type,
-                    "description": report.description,
-                    "last_seen_location": report.last_seen_location,
-                    "reporter_phone": report.reporter_phone,
-                    "created_at": report.created_at.isoformat(),
-                },
+                data,
                 ensure_ascii=False,
             ),
         )

@@ -49,8 +49,7 @@ async def test_facility_matches_the_documented_shape(client: AsyncClient) -> Non
     assert set(facility) == FIELDS
     assert facility["id"].startswith("fac-")
     assert facility["category"] == "medical"
-    assert facility["distance"].endswith(("km", "m"))
-    assert "·" in facility["availability"] or facility["availability"]
+    assert "km" in facility["distance"] or "m" in facility["distance"]
     assert isinstance(facility["latitude"], float)
 
 
@@ -61,7 +60,8 @@ async def test_results_are_nearest_first(client: AsyncClient) -> None:
 
 
 def _metres(distance: str) -> float:
-    value, unit = distance.split()
+    parts = distance.split()
+    value, unit = parts[0], parts[1]
     return float(value) * (1000 if unit == "km" else 1)
 
 

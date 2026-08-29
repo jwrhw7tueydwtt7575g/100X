@@ -303,6 +303,8 @@ class LostFoundReport(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     reporter_phone: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     last_seen_location: Mapped[str | None] = mapped_column(String(255))
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
     # The chat session the report came from, so a volunteer can read the
     # conversation around it. Nullable: reports also arrive from the form and
     # from desks with no session at all.

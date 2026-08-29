@@ -21,7 +21,7 @@ function useSafeTabBarHeight() {
 }
 
 export default function ChatScreen() {
-  const { copy, language, messages, isLoading, isReady, error, sendMessage, speak, stopSpeaking, startRecording, stopRecording, cancelRecording, isRecording, recordingSeconds, confirmSOS, user } = useApp();
+  const { copy, language, messages, isLoading, isReady, error, sendMessage, speak, stopSpeaking, startRecording, stopRecording, cancelRecording, isRecording, recordingSeconds, confirmSOS, user, location, requestLocation } = useApp();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const tabBarHeight = useSafeTabBarHeight();
@@ -31,7 +31,134 @@ export default function ChatScreen() {
   const chatData = useMemo<Message[]>(() => messages, [messages]);
 
   if (!isReady) return <View style={styles.loading}><ActivityIndicator color={colors.light.primary} /></View>;
-  return <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={0} style={styles.screen}><View style={[styles.header, { paddingTop: insets.top + 12 }]}><BrandMark compact /><View style={styles.headerActions}><Pressable accessibilityRole="button" accessibilityLabel="Account" onPress={() => router.push(user ? '/(tabs)/settings' : '/auth')} style={styles.headerButton}><Feather name={user ? 'user-check' : 'user'} size={18} color={user ? colors.light.teal : colors.light.foreground} /></Pressable><View style={styles.languagePill}><View style={styles.languageDot} /><Text style={styles.languageText}>{language === 'mr' ? 'मराठी' : language === 'hi' ? 'हिंदी' : 'English'}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => router.push('/(tabs)/settings')} style={styles.headerButton}><Feather name="settings" size={18} color={colors.light.foreground} /></Pressable></View></View>{!isReady ? null : <FlatList data={chatData} keyExtractor={(item) => item.id} renderItem={({ item }) => <ChatMessage message={item} language={language} onSpeak={(text) => void speak(text)} onStopSpeaking={() => void stopSpeaking()} onViewMap={() => router.push('/(tabs)/map?focus=crowd')} onViewRoute={() => router.push('/(tabs)/map?focus=route')} onConfirmSOS={() => void confirmSOS()} onTalk={() => submit(copy.help)} />} ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{copy.greeting}</Text><Text style={styles.emptyDescription}>{copy.greetingSub} {copy.noMessages}</Text><View style={styles.suggestionWrap}>{suggestions.map(({ key, label }) => <Pressable key={key} accessibilityRole="button" onPress={() => submit(label)} style={({ pressed }) => [styles.chip, pressed && styles.pressed]}><Feather name={key === 'crowd' ? 'users' : key === 'facility' ? 'map-pin' : key === 'route' ? 'navigation' : key === 'temple' ? 'home' : 'life-buoy'} size={14} color={colors.light.teal} /><Text style={styles.chipText}>{label}</Text></Pressable>)}</View></View>} ListHeaderComponent={messages.length > 0 ? <View style={styles.historyIntro}><Text style={styles.historyText}>WariVerse · {copy.recent}</Text></View> : null} ListFooterComponent={isLoading ? <View style={styles.typing}><View style={styles.typingDot} /><View style={styles.typingDot} /><View style={styles.typingDot} /><Text style={styles.typingText}>{copy.checking}</Text></View> : null} contentContainerStyle={[styles.listContent, { paddingBottom: tabBarHeight + 140 }]} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive" scrollEnabled={chatData.length > 0} showsVerticalScrollIndicator={false} />}{error && <View style={styles.errorBar}><Feather name="wifi-off" size={14} color={colors.light.destructive} /><Text style={styles.errorText}>{error}</Text><Pressable onPress={() => setDraft('')}><Text style={styles.retryText}>Dismiss</Text></Pressable></View>}{isRecording && <View style={styles.recordingBar}><View style={styles.recordingPulse}><Feather name="mic" size={16} color={colors.light.white} /></View><View style={styles.recordingInfo}><Text style={styles.recordingTitle}>{copy.listening}</Text><Text style={styles.recordingTime}>0:{String(recordingSeconds).padStart(2, '0')}</Text></View><Pressable accessibilityRole="button" onPress={() => void cancelRecording()} style={styles.cancelRecord}><Text style={styles.cancelRecordText}>{copy.cancel}</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void stopRecording()} style={styles.doneRecord}><Feather name="check" size={17} color={colors.light.white} /></Pressable></View>}<View style={[styles.composerWrap, { paddingBottom: tabBarHeight + (Platform.OS === 'web' ? 14 : 8) }]}><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.suggestionRow}>{suggestions.map(({ key, label }) => <Pressable key={`quick-${key}`} accessibilityRole="button" onPress={() => submit(label)} style={({ pressed }) => [styles.quickChip, pressed && styles.pressed]}><Feather name={key === 'crowd' ? 'users' : key === 'facility' ? 'map-pin' : key === 'route' ? 'navigation' : key === 'temple' ? 'home' : 'life-buoy'} size={13} color={colors.light.teal} /><Text style={styles.quickChipText}>{label}</Text></Pressable>)}</ScrollView><View style={styles.composerLabelRow}><Feather name="edit-3" size={14} color={colors.light.teal} /><Text style={styles.composerLabel}>Ask WariVerse anything</Text></View><View style={styles.composer}><TextInput testID="chat-message-input" accessibilityLabel="Type your question" value={draft} onChangeText={setDraft} placeholder={isRecording ? copy.listening : copy.placeholder} placeholderTextColor={colors.light.mutedForeground} style={styles.input} multiline maxLength={500} editable={!isLoading && !isRecording} onSubmitEditing={() => submit()} /><Pressable accessibilityRole="button" accessibilityLabel={isRecording ? 'Stop recording' : 'Start voice input'} onPress={() => void (isRecording ? stopRecording() : startRecording())} style={({ pressed }) => [styles.micButton, isRecording && styles.micRecording, pressed && styles.pressed]}><Feather name={isRecording ? 'square' : 'mic'} size={18} color={isRecording ? colors.light.white : colors.light.teal} /></Pressable><Pressable testID="chat-send-button" accessibilityRole="button" accessibilityLabel={copy.send} onPress={() => submit()} disabled={isLoading || !draft.trim()} style={({ pressed }) => [styles.sendButton, (!draft.trim() || isLoading) && styles.sendDisabled, pressed && styles.pressed]}><Feather name="arrow-up" size={19} color={colors.light.white} /></Pressable></View></View></KeyboardAvoidingView>;
+  return (
+    <KeyboardAvoidingView behavior="padding" keyboardVerticalOffset={0} style={styles.screen}>
+      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+        <BrandMark compact />
+        <View style={styles.headerActions}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Account" onPress={() => router.push(user ? '/(tabs)/settings' : '/auth')} style={styles.headerButton}>
+            <Feather name={user ? 'user-check' : 'user'} size={18} color={user ? colors.light.teal : colors.light.foreground} />
+          </Pressable>
+          <View style={styles.languagePill}>
+            <View style={styles.languageDot} />
+            <Text style={styles.languageText}>{language === 'mr' ? 'मराठी' : language === 'hi' ? 'हिंदी' : 'English'}</Text>
+          </View>
+          <Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => router.push('/(tabs)/settings')} style={styles.headerButton}>
+            <Feather name="settings" size={18} color={colors.light.foreground} />
+          </Pressable>
+        </View>
+      </View>
+
+      {location.permission !== 'granted' && (
+        <View style={styles.gpsNoticeBar}>
+          <Feather name="map-pin" size={15} color="#92400e" />
+          <Text style={styles.gpsNoticeText}>GPS is disconnected. Enable GPS for live nearby facilities.</Text>
+          <Pressable onPress={() => void requestLocation()} style={styles.connectGpsHeaderBtn}>
+            <Feather name="crosshair" size={13} color={colors.light.white} />
+            <Text style={styles.connectGpsHeaderText}>Connect GPS</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {!isReady ? null : (
+        <FlatList
+          data={chatData}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <ChatMessage
+              message={item}
+              language={language}
+              locationPermission={location.permission}
+              onSpeak={(text) => void speak(text)}
+              onStopSpeaking={() => void stopSpeaking()}
+              onViewMap={() => router.push('/(tabs)/map?focus=crowd')}
+              onViewRoute={() => router.push('/(tabs)/map?focus=route')}
+              onConfirmSOS={() => void confirmSOS()}
+              onTalk={() => submit(copy.help)}
+              onRequestLocation={() => void requestLocation()}
+            />
+          )}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>{copy.greeting}</Text>
+              <Text style={styles.emptyDescription}>{copy.greetingSub} {copy.noMessages}</Text>
+              <View style={styles.suggestionWrap}>
+                {suggestions.map(({ key, label }) => (
+                  <Pressable key={key} accessibilityRole="button" onPress={() => submit(label)} style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
+                    <Feather name={key === 'crowd' ? 'users' : key === 'facility' ? 'map-pin' : key === 'route' ? 'navigation' : key === 'temple' ? 'home' : 'life-buoy'} size={14} color={colors.light.teal} />
+                    <Text style={styles.chipText}>{label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          }
+          ListHeaderComponent={messages.length > 0 ? <View style={styles.historyIntro}><Text style={styles.historyText}>WariVerse · {copy.recent}</Text></View> : null}
+          ListFooterComponent={isLoading ? <View style={styles.typing}><View style={styles.typingDot} /><View style={styles.typingDot} /><View style={styles.typingDot} /><Text style={styles.typingText}>{copy.checking}</Text></View> : null}
+          contentContainerStyle={[styles.listContent, { paddingBottom: tabBarHeight + 140 }]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          scrollEnabled={chatData.length > 0}
+          showsVerticalScrollIndicator={false}
+        />
+      )}
+
+      {error && (
+        <View style={styles.errorBar}>
+          <Feather name="wifi-off" size={14} color={colors.light.destructive} />
+          <Text style={styles.errorText}>{error}</Text>
+          <Pressable onPress={() => setDraft('')}><Text style={styles.retryText}>Dismiss</Text></Pressable>
+        </View>
+      )}
+
+      {isRecording && (
+        <View style={styles.recordingBar}>
+          <View style={styles.recordingPulse}><Feather name="mic" size={16} color={colors.light.white} /></View>
+          <View style={styles.recordingInfo}>
+            <Text style={styles.recordingTitle}>{copy.listening}</Text>
+            <Text style={styles.recordingTime}>0:{String(recordingSeconds).padStart(2, '0')}</Text>
+          </View>
+          <Pressable accessibilityRole="button" onPress={() => void cancelRecording()} style={styles.cancelRecord}><Text style={styles.cancelRecordText}>{copy.cancel}</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={() => void stopRecording()} style={styles.doneRecord}><Feather name="check" size={17} color={colors.light.white} /></Pressable>
+        </View>
+      )}
+
+      <View style={[styles.composerWrap, { paddingBottom: tabBarHeight + (Platform.OS === 'web' ? 14 : 8) }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.suggestionRow}>
+          {suggestions.map(({ key, label }) => (
+            <Pressable key={`quick-${key}`} accessibilityRole="button" onPress={() => submit(label)} style={({ pressed }) => [styles.quickChip, pressed && styles.pressed]}>
+              <Feather name={key === 'crowd' ? 'users' : key === 'facility' ? 'map-pin' : key === 'route' ? 'navigation' : key === 'temple' ? 'home' : 'life-buoy'} size={13} color={colors.light.teal} />
+              <Text style={styles.quickChipText}>{label}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+        <View style={styles.composerLabelRow}>
+          <Feather name="edit-3" size={14} color={colors.light.teal} />
+          <Text style={styles.composerLabel}>Ask WariVerse anything</Text>
+        </View>
+        <View style={styles.composer}>
+          <TextInput
+            testID="chat-message-input"
+            accessibilityLabel="Type your question"
+            value={draft}
+            onChangeText={setDraft}
+            placeholder={isRecording ? copy.listening : copy.placeholder}
+            placeholderTextColor={colors.light.mutedForeground}
+            style={styles.input}
+            multiline
+            maxLength={500}
+            editable={!isLoading && !isRecording}
+            onSubmitEditing={() => submit()}
+          />
+          <Pressable accessibilityRole="button" accessibilityLabel={isRecording ? 'Stop recording' : 'Start voice input'} onPress={() => void (isRecording ? stopRecording() : startRecording())} style={({ pressed }) => [styles.micButton, isRecording && styles.micRecording, pressed && styles.pressed]}>
+            <Feather name={isRecording ? 'square' : 'mic'} size={18} color={isRecording ? colors.light.white : colors.light.teal} />
+          </Pressable>
+          <Pressable testID="chat-send-button" accessibilityRole="button" accessibilityLabel={copy.send} onPress={() => submit()} disabled={isLoading || !draft.trim()} style={({ pressed }) => [styles.sendButton, (!draft.trim() || isLoading) && styles.sendDisabled, pressed && styles.pressed]}>
+            <Feather name="arrow-up" size={19} color={colors.light.white} />
+          </Pressable>
+        </View>
+      </View>
+    </KeyboardAvoidingView>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -43,6 +170,10 @@ const styles = StyleSheet.create({
   languageDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.light.teal },
   languageText: { color: colors.light.teal, fontFamily: 'Inter_600SemiBold', fontSize: 10 },
   headerButton: { width: 34, height: 34, borderRadius: 12, backgroundColor: colors.light.card, borderWidth: 1, borderColor: colors.light.border, alignItems: 'center', justifyContent: 'center' },
+  gpsNoticeBar: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 16, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: '#fef3c7', borderWidth: 1, borderColor: '#fde68a' },
+  gpsNoticeText: { flex: 1, color: '#92400e', fontFamily: 'Inter_500Medium', fontSize: 11 },
+  connectGpsHeaderBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: colors.light.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 9 },
+  connectGpsHeaderText: { color: colors.light.white, fontFamily: 'Inter_600SemiBold', fontSize: 11 },
   listContent: { paddingHorizontal: 18, flexGrow: 1 },
   historyIntro: { paddingBottom: 14, paddingTop: 2 },
   historyText: { color: colors.light.mutedForeground, fontFamily: 'Inter_600SemiBold', fontSize: 10, letterSpacing: 1 },

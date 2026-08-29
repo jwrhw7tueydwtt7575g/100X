@@ -380,6 +380,7 @@ class FacilityOut(Schema):
         examples=["Open · Volunteer staffed"],
     )
     contact: str | None = None
+    phone: str | None = Field(default=None, exclude=True)
     # Kept for the orchestrator's tool summaries; not part of the card.
     distance_m: int = Field(exclude=True, default=0)
     walk_minutes: int = Field(exclude=True, default=0)
@@ -455,6 +456,8 @@ class LostFoundCreate(ClientSchema):
     )
     reporter_phone: str
     last_seen_location: str | None = Field(default=None, max_length=255)
+    latitude: Latitude | None = None
+    longitude: Longitude | None = None
     session_id: str | None = Field(default=None, max_length=200)
     language: Language | None = None
 
@@ -479,6 +482,7 @@ class LostFoundResponse(Schema):
     incident_type: IncidentType | None = None
     description: str | None = None
     last_seen_location: str | None = None
+    location: GeoPoint | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -85,6 +85,8 @@ export type FacilityWidget = {
     latitude?: number;
     longitude?: number;
     availability?: string;
+    contact?: string;
+    phone?: string;
   };
 };
 
@@ -129,8 +131,8 @@ export type EscalationWidget = {
 };
 
 export type LocationState = {
-  latitude: number;
-  longitude: number;
+  latitude: number | null;
+  longitude: number | null;
   permission: 'unknown' | 'granted' | 'denied';
 };
 

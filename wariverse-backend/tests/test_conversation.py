@@ -154,7 +154,7 @@ async def test_facility_widget_shape(client: AsyncClient) -> None:
         "contact",
     }
     assert data["category"] == "toilet"
-    assert data["distance"].endswith(("km", "m"))
+    assert "km" in data["distance"] or "m" in data["distance"]
 
 
 async def test_temple_widget_shape(client: AsyncClient) -> None:

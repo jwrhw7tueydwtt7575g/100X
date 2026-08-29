@@ -1,6 +1,7 @@
 import { Feather } from '@expo/vector-icons';
 import React, { useEffect, useId, useRef } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { WebView } from 'react-native-webview';
 import colors from '@/constants/colors';
 import type { LocationState } from '@/types/domain';
 
@@ -18,6 +19,8 @@ const ROUTE_COORDS = [
   [17.6775, 75.3283],
 ];
 
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
+
 export function MapCanvas({
   mode = 'crowd',
   location,
@@ -29,6 +32,7 @@ export function MapCanvas({
 }) {
   const containerId = useId().replace(/:/g, '_');
   const iframeRef = useRef<any>(null);
+  const webviewRef = useRef<WebView>(null);
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -64,8 +68,11 @@ export function MapCanvas({
     <body>
       <div id="map"></div>
       <script>
-        const map = L.map('map', { zoomControl: false }).setView([${PANDHARPUR_CENTER.lat}, ${PANDHARPUR_CENTER.lng}], 15);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        const userLat = ${location.latitude || PANDHARPUR_CENTER.lat};
+        const userLng = ${location.longitude || PANDHARPUR_CENTER.lng};
+        const locationHasGps = ${location.latitude !== null && location.longitude !== null};
+        const map = L.map('map', { zoomControl: false }).setView([userLat, userLng], 15);
+        L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}@2x?access_token=${MAPBOX_TOKEN}', {
           maxZoom: 19
         }).addTo(map);
 
@@ -89,20 +96,22 @@ export function MapCanvas({
         ${
           mode === 'route'
             ? `
-          const routeLine = L.polyline(${JSON.stringify(ROUTE_COORDS)}, {
-            color: '#e06435',
-            weight: 5,
-            opacity: 0.85,
-            dashArray: '8, 8'
-          }).addTo(map);
-          map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+          if (!locationHasGps) {
+            const routeLine = L.polyline(${JSON.stringify(ROUTE_COORDS)}, {
+              color: '#e06435',
+              weight: 5,
+              opacity: 0.85,
+              dashArray: '8, 8'
+            }).addTo(map);
+            map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+          } else {
+            map.setView([userLat, userLng], 16);
+          }
         `
             : ''
         }
 
         // User location marker
-        const userLat = ${location.latitude || PANDHARPUR_CENTER.lat};
-        const userLng = ${location.longitude || PANDHARPUR_CENTER.lng};
         L.marker([userLat, userLng], {
           icon: L.divIcon({
             className: 'user-icon',
@@ -124,6 +133,8 @@ export function MapCanvas({
     if (onRecenter) onRecenter();
     if (Platform.OS === 'web' && iframeRef.current?.contentWindow?.recenterMap) {
       iframeRef.current.contentWindow.recenterMap();
+    } else if (webviewRef.current) {
+      webviewRef.current.injectJavaScript('if (window.recenterMap) { window.recenterMap(); } true;');
     }
   };
 
@@ -138,9 +149,14 @@ export function MapCanvas({
           title="Leaflet Wari Map"
         />
       ) : (
-        <View style={styles.fallback}>
-          <Text style={styles.fallbackText}>Leaflet map loading...</Text>
-        </View>
+        <WebView
+          ref={webviewRef}
+          originWhitelist={['*']}
+          source={{ html: htmlContent }}
+          style={styles.iframe as any}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+        />
       )}
 
       {location.permission === 'granted' && (

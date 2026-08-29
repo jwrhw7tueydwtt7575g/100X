@@ -17,14 +17,16 @@ pace.
 from __future__ import annotations
 
 from typing import Any
-
+import httpx
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.data.i18n import t
 from app.data.reference import ZONES_BY_ID, localized_name
 from app.models.schemas import LabelledPoint, RouteGuidanceResponse, Waypoint
 from app.services.crowd_service import CONGESTION_FACTOR, CrowdService, ZoneNotFoundError
+from app.services.facility_service import check_mapbox_rate_limit
 from app.services.geo import haversine_m
 
 log = structlog.get_logger(__name__)
@@ -126,9 +128,42 @@ class RouteService:
         dest_lng = TEMPLE_LON if dest_lng is None else dest_lng
 
         statuses = await self._zone_statuses()
+        avoid_areas = self._avoid_areas(statuses, language)
+
         chosen, joined, total_m = self._choose(
             origin_lat, origin_lng, dest_lat, dest_lng, statuses
         )
+
+        # Attempt Mapbox Directions API lookup for live polyline/distance
+        mapbox_route = await self._fetch_mapbox_route(origin_lat, origin_lng, dest_lat, dest_lng)
+        if mapbox_route and mapbox_route.get("coordinates"):
+            log.info("mapbox_route_selected", distance_m=round(mapbox_route["distance_m"]))
+            coords = list(mapbox_route["coordinates"])
+            if coords and (abs(coords[0][0] - origin_lat) > 1e-6 or abs(coords[0][1] - origin_lng) > 1e-6):
+                coords.insert(0, (origin_lat, origin_lng))
+            if coords and (abs(coords[-1][0] - dest_lat) > 1e-6 or abs(coords[-1][1] - dest_lng) > 1e-6):
+                coords.append((dest_lat, dest_lng))
+
+            dist_m = mapbox_route["distance_m"]
+            return RouteGuidanceResponse(
+                origin=LabelledPoint(
+                    latitude=origin_lat,
+                    longitude=origin_lng,
+                    label=t("route_current_location", language),
+                ),
+                destination=LabelledPoint(
+                    latitude=dest_lat,
+                    longitude=dest_lng,
+                    label=self._destination_label(dest_lat, dest_lng, language),
+                ),
+                route_coordinates=[
+                    Waypoint(latitude=pt[0], longitude=pt[1]) for pt in coords
+                ],
+                estimated_time=format_duration(dist_m, language),
+                distance=format_distance(dist_m),
+                avoid_areas=avoid_areas,
+                route_id=chosen["route_id"],
+            )
 
         log.info(
             "route_selected",
@@ -153,9 +188,50 @@ class RouteService:
             ],
             estimated_time=format_duration(total_m, language),
             distance=format_distance(total_m),
-            avoid_areas=self._avoid_areas(statuses, language),
+            avoid_areas=avoid_areas,
             route_id=chosen["route_id"],
         )
+
+    async def _fetch_mapbox_route(
+        self, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float
+    ) -> dict[str, Any] | None:
+        token = settings.mapbox_access_token
+        if not token:
+            return None
+
+        if not await check_mapbox_rate_limit(key="wv:mapbox:ratelimit:route"):
+            log.warning("mapbox_route_rate_limited")
+            return None
+
+        try:
+            url = f"https://api.mapbox.com/directions/v5/mapbox/walking/{origin_lng},{origin_lat};{dest_lng},{dest_lat}"
+            params = {
+                "access_token": token,
+                "geometries": "geojson",
+                "overview": "full",
+            }
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, params=params)
+                if resp.status_code != 200:
+                    log.warning("mapbox_directions_failed", status=resp.status_code, body=resp.text)
+                    return None
+                data = resp.json()
+                routes = data.get("routes", [])
+                if not routes:
+                    return None
+                best_route = routes[0]
+                geometry = best_route.get("geometry", {})
+                coords = geometry.get("coordinates", [])
+                # GeoJSON coordinates are [lon, lat], convert to [lat, lon]
+                lat_lon_coords = [(c[1], c[0]) for c in coords]
+                return {
+                    "coordinates": lat_lon_coords,
+                    "distance_m": best_route.get("distance", 0.0),
+                    "duration_sec": best_route.get("duration", 0.0),
+                }
+        except Exception as exc:  # noqa: BLE001
+            log.warning("mapbox_route_fetch_error", error=str(exc))
+            return None
 
     # --- internals ---------------------------------------------------------
 

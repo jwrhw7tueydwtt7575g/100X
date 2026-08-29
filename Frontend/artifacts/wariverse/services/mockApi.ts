@@ -82,13 +82,33 @@ export const mockConversationApi = {
     let kind = 'normal';
     let widgets: ToolWidget[] = [];
 
-    if (query.includes('crowd') || query.includes('गर्दी') || query.includes('भीड़') || query.includes('gate')) {
+    if (query.includes('crowd') || query.includes('गर्दी') || query.includes('भीड़') || query.includes('gate') || query.includes('gate-')) {
       kind = 'crowd';
       widgets = [crowdWidget()];
-    } else if (query.includes('medical') || query.includes('facility') || query.includes('मेडिकल') || query.includes('सुविधा')) {
+    } else if (
+      query.includes('hospital') || query.includes('doctor') || query.includes('medical') || query.includes('facility') ||
+      query.includes('toilet') || query.includes('water') || query.includes('food') || query.includes('police') ||
+      query.includes('station') || query.includes('rest') || query.includes('hotel') || query.includes('मेडिकल') ||
+      query.includes('सुविधा') || query.includes('हॉस्पिटल') || query.includes('पोलीस')
+    ) {
       kind = 'facility';
-      widgets = [facilityWidget()];
-    } else if (query.includes('route') || query.includes('temple') || query.includes('रस्ता') || query.includes('रास्ता') || query.includes('मंदिर')) {
+      const categoryName = query.includes('police') || query.includes('पोलीस') ? 'Police Station / Help Desk' : 'Wari Medical Center';
+      widgets = [{
+        type: 'nearby_facility',
+        data: {
+          category: 'medical',
+          name: categoryName,
+          distance: '0.8 km',
+          latitude: 18.516,
+          longitude: 73.855,
+          availability: 'Open · 24x7 Staffed',
+        },
+      }];
+    } else if (
+      query.includes('route') || query.includes('way') || query.includes('path') || query.includes('direction') ||
+      query.includes('reach') || query.includes('show route') || query.includes('temple') || query.includes('रस्ता') ||
+      query.includes('रास्ता') || query.includes('मंदिर') || query.includes('मार्ग')
+    ) {
       kind = 'route';
       widgets = [routeWidget];
     } else if (query.includes('when') || query.includes('forecast') || query.includes('avoid') || query.includes('कब') || query.includes('वेळ')) {

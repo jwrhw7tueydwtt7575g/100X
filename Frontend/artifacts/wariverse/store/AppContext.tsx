@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
@@ -7,6 +8,20 @@ import { getCopy } from '@/constants/copy';
 import { mockConversationApi } from '@/services/mockApi';
 import { speechService, textToSpeechService } from '@/services/speechService';
 import type { ConversationResponse, Language, LocationState, Message, User } from '@/types/domain';
+
+function getApiUrl(): string {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+  const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest2?.extra?.expoGo?.debuggerHost;
+  if (hostUri) {
+    const hostIp = hostUri.split(':')[0];
+    if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
+      return `http://${hostIp}:8000/api`;
+    }
+  }
+  return 'http://localhost:8000/api';
+}
 
 type AppContextValue = {
   language: Language;
@@ -60,7 +75,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [voiceInput, setVoiceInputState] = useState(true);
   const [isOnboarded, setIsOnboarded] = useState(false);
   const [user, setUser] = useState<User | null>(null);
-  const [location, setLocation] = useState<LocationState>({ latitude: 18.517, longitude: 73.856, permission: 'unknown' });
+  const [location, setLocation] = useState<LocationState>({ latitude: null, longitude: null, permission: 'unknown' });
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -105,6 +120,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user, isReady]);
 
+  useEffect(() => {
+    if (isReady) {
+      void requestLocation();
+    }
+  }, [isReady]);
+
   const setLanguage = useCallback((next: Language) => {
     setLanguageState(next);
     Haptics.selectionAsync().catch(() => undefined);
@@ -120,8 +141,58 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const userMessage: Message = { id: createId('user'), role: 'user', text: text.trim(), timestamp: new Date().toISOString(), language, isVoice };
       setMessages((current) => [...current, userMessage]);
       setIsLoading(true);
+
+      // Attempt to acquire fresh real-time GPS location before sending message
+      let currentLat = location.latitude;
+      let currentLng = location.longitude;
+      if (Platform.OS !== 'web') {
+        try {
+          const perm = await Location.getForegroundPermissionsAsync();
+          if (perm.status === 'granted') {
+            const currentPos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            currentLat = currentPos.coords.latitude;
+            currentLng = currentPos.coords.longitude;
+            setLocation({ latitude: currentLat, longitude: currentLng, permission: 'granted' });
+          }
+        } catch {
+          // Use last known state if position check times out or fails
+        }
+      }
+
       try {
-        const response = await mockConversationApi.sendMessage({ sessionId, language, message: text.trim() });
+        let response: ConversationResponse | null = null;
+        const apiUrl = getApiUrl();
+        try {
+          const res = await fetch(`${apiUrl}/conversation/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              session_id: sessionId,
+              language,
+              message: text.trim(),
+              latitude: currentLat,
+              longitude: currentLng,
+              is_voice: isVoice,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            response = {
+              sessionId: data.session_id,
+              messageId: data.message_id,
+              language: data.language,
+              responseText: data.response_text,
+              widgets: data.widgets,
+            };
+          }
+        } catch {
+          // Backend unreachable or offline, will fallback to local response generator
+        }
+
+        if (!response) {
+          response = await mockConversationApi.sendMessage({ sessionId, language, message: text.trim() });
+        }
+
         const assistantMessage: Message = { id: response.messageId, role: 'assistant', text: response.responseText, timestamp: new Date().toISOString(), language: response.language, widgets: response.widgets };
         setMessages((current) => [...current, assistantMessage]);
         if (readAloud) await textToSpeechService.speak(response.responseText, language);
@@ -131,7 +202,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setIsLoading(false);
       }
     },
-    [isLoading, language, readAloud]
+    [isLoading, language, readAloud, location]
   );
 
   const confirmSOS = useCallback(async () => {
@@ -185,7 +256,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const requestLocation = useCallback(async () => {
     if (Platform.OS === 'web') {
-      setLocation((current) => ({ ...current, permission: 'granted' }));
+      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, permission: 'granted' });
+          },
+          () => {
+            setLocation((current) => ({ ...current, permission: 'denied' }));
+          }
+        );
+      } else {
+        setLocation((current) => ({ ...current, permission: 'granted' }));
+      }
       return;
     }
     const permission = await Location.requestForegroundPermissionsAsync();
@@ -194,7 +276,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       Alert.alert(appCopy.location, appCopy.locationDenied);
       return;
     }
-    const current = await Location.getCurrentPositionAsync({});
+    const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
     setLocation({ latitude: current.coords.latitude, longitude: current.coords.longitude, permission: 'granted' });
   }, [appCopy.location, appCopy.locationDenied]);
 

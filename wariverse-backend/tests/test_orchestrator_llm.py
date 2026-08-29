@@ -376,7 +376,7 @@ async def test_nearby_facility_emits_one_widget_per_place() -> None:
     )
     assert len(outcome.widgets) >= 2
     assert all(w["type"] == "nearby_facility" for w in outcome.widgets)
-    distances = [w["data"]["distance"] for w in outcome.widgets]
+    distances = [float(w["data"]["distance"].split()[0]) for w in outcome.widgets]
     assert distances == sorted(distances)
 
 

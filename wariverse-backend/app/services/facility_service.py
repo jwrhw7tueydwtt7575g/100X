@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,7 @@ from app.data.i18n import t
 from app.data.reference import FACILITIES, localized_name
 from app.models.db_models import Facility
 from app.models.schemas import FacilityOut
+from app.redis_client import get_redis
 from app.services.geo import bounding_box, haversine_m, walk_minutes
 from app.utils import is_open_now
 
@@ -30,12 +32,53 @@ log = structlog.get_logger(__name__)
 # Types a pilgrim should still be routed to even when marked closed.
 _ALWAYS_RELEVANT = {"medical", "police"}
 
+MAPBOX_CATEGORY_MAP = {
+    "medical": "hospital,pharmacy,clinic,doctor",
+    "police": "police",
+    "food": "restaurant,food,fast_food",
+    "accommodation": "lodging,hotel",
+    "toilet": "restroom,public_toilet",
+    "water": "drinking_water",
+}
 
-def format_distance(metres: float) -> str:
+
+async def check_mapbox_rate_limit(
+    key: str = "wv:mapbox:ratelimit", max_requests: int = 20, window_seconds: int = 60
+) -> bool:
+    client = get_redis()
+    if client is None:
+        return True
+    try:
+        current = await client.incr(key)
+        if current == 1:
+            await client.expire(key, window_seconds)
+        return current <= max_requests
+    except Exception as exc:
+        log.warning("mapbox_ratelimit_check_failed", error=str(exc))
+        return True
+
+
+import math
+
+def get_bearing_direction(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
+    """Calculates compass heading from (lat1, lon1) to (lat2, lon2)."""
+    dlon = math.radians(lon2 - lon1)
+    lat1_r, lat2_r = math.radians(lat1), math.radians(lat2)
+    x = math.sin(dlon) * math.cos(lat2_r)
+    y = math.cos(lat1_r) * math.sin(lat2_r) - math.sin(lat1_r) * math.cos(lat2_r) * math.cos(dlon)
+    bearing = (math.degrees(math.atan2(x, y)) + 360) % 360
+    compass = ["North", "North-East", "East", "South-East", "South", "South-West", "West", "North-West"]
+    return compass[int((bearing + 22.5) // 45) % 8]
+
+
+def format_distance(metres: float, user_lat: float | None = None, user_lon: float | None = None, fac_lat: float | None = None, fac_lon: float | None = None) -> str:
     """`0.8 km`, or metres when that would round to `0.0 km`."""
-    if metres < 100:
-        return f"{round(metres)} m"
-    return f"{metres / 1000:.1f} km"
+    dist_str = f"{round(metres)} m" if metres < 100 else f"{metres / 1000:.1f} km"
+    if user_lat is not None and user_lon is not None and fac_lat is not None and fac_lon is not None:
+        direction = get_bearing_direction(user_lat, user_lon, fac_lat, fac_lon)
+        mins = max(1, int(round(metres / 80.0)))
+        return f"{dist_str} ({direction} • {mins} min walk)"
+    return dist_str
 
 
 def format_availability(row: dict[str, Any], is_open: bool, language: str) -> str:
@@ -61,13 +104,27 @@ class FacilityService:
         congestion_factor: float = 1.0,
     ) -> list[FacilityOut]:
         radius = min(radius_m or settings.facility_default_radius_m, settings.facility_max_radius_m)
+
+        # Retrieve DB / reference candidates
         rows = await self._candidates(lat, lon, radius, facility_types)
 
+        # Retrieve Mapbox live POI candidates if token available and rate limit ok
+        mapbox_rows = await self._fetch_mapbox_pois(lat, lon, facility_types)
+        all_rows = mapbox_rows + rows
+
         results: list[FacilityOut] = []
-        for row in rows:
+        seen_names = set()
+
+        for row in all_rows:
             distance = haversine_m(lat, lon, row["lat"], row["lon"])
             if distance > radius:
                 continue
+
+            name = localized_name(row, language) if "name_en" in row or "name" in row else row.get("name", "")
+            dedup_key = (row["facility_type"], name.lower())
+            if dedup_key in seen_names:
+                continue
+            seen_names.add(dedup_key)
 
             is_open = is_open_now(
                 row.get("opens_at"), row.get("closes_at"), row.get("is_24x7", False)
@@ -75,16 +132,19 @@ class FacilityService:
             if open_only and not is_open and row["facility_type"] not in _ALWAYS_RELEVANT:
                 continue
 
+            contact = row.get("contact_phone") or row.get("phone")
+
             results.append(
                 FacilityOut(
-                    id=row.get("external_id") or str(row.get("id", "")),
+                    id=str(row.get("external_id") or row.get("id") or f"mb-{len(results)}"),
                     category=row["facility_type"],
-                    name=localized_name(row, language),
-                    distance=format_distance(distance),
+                    name=name,
+                    distance=format_distance(distance, lat, lon, row["lat"], row["lon"]),
                     latitude=row["lat"],
                     longitude=row["lon"],
                     availability=format_availability(row, is_open, language),
-                    contact=row.get("contact_phone"),
+                    contact=contact,
+                    phone=contact,
                     distance_m=int(round(distance)),
                     walk_minutes=walk_minutes(
                         distance, settings.walking_speed_kmph, congestion_factor
@@ -111,6 +171,113 @@ class FacilityService:
         return found[0] if found else None
 
     # --- internals ---------------------------------------------------------
+
+    async def _fetch_mapbox_pois(
+        self, lat: float, lon: float, facility_types: list[str] | None
+    ) -> list[dict[str, Any]]:
+        token = settings.mapbox_access_token
+        if not token:
+            return []
+
+        if not await check_mapbox_rate_limit():
+            log.warning("mapbox_facility_rate_limited")
+            return []
+
+        categories_to_query = []
+        if facility_types:
+            for ft in facility_types:
+                if ft in MAPBOX_CATEGORY_MAP:
+                    categories_to_query.append((ft, MAPBOX_CATEGORY_MAP[ft]))
+        else:
+            categories_to_query = [(k, v) for k, v in MAPBOX_CATEGORY_MAP.items()]
+
+        if not categories_to_query:
+            return []
+
+        results = []
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for category_type, mapbox_cat in categories_to_query:
+                cat_results = []
+                try:
+                    # 1. Primary: Category Search Box API
+                    url = f"https://api.mapbox.com/search/searchbox/v1/category/{mapbox_cat}"
+                    params = {
+                        "access_token": token,
+                        "proximity": f"{lon},{lat}",
+                        "radius": 10000,
+                        "limit": 5,
+                    }
+                    resp = await client.get(url, params=params)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        for feat in data.get("features", []):
+                            props = feat.get("properties", {})
+                            geom = feat.get("geometry", {})
+                            coords = geom.get("coordinates", [lon, lat])
+                            f_lon, f_lat = coords[0], coords[1]
+                            meta = props.get("metadata") or {}
+                            phone = meta.get("phone") or meta.get("telephone") or props.get("phone") or props.get("telephone")
+                            mb_id = props.get("mapbox_id") or props.get("id") or len(results)
+                            cat_results.append(
+                                {
+                                    "id": f"fac-mb-{mb_id}",
+                                    "external_id": f"fac-mb-{mb_id}",
+                                    "name": props.get("name") or "Nearby Facility",
+                                    "name_en": props.get("name") or "Nearby Facility",
+                                    "facility_type": category_type,
+                                    "lat": f_lat,
+                                    "lon": f_lon,
+                                    "address": props.get("full_address") or props.get("address"),
+                                    "contact_phone": phone,
+                                    "phone": phone,
+                                    "is_24x7": True,
+                                    "is_operational": True,
+                                    "details": {"staffing": "Mapbox Verified POI"},
+                                }
+                            )
+
+                    # 2. Fallback: Forward Search API if Category search yields 0 POIs
+                    if not cat_results:
+                        f_url = "https://api.mapbox.com/search/searchbox/v1/forward"
+                        f_params = {
+                            "q": category_type,
+                            "access_token": token,
+                            "proximity": f"{lon},{lat}",
+                            "limit": 5,
+                        }
+                        f_resp = await client.get(f_url, params=f_params)
+                        if f_resp.status_code == 200:
+                            f_data = f_resp.json()
+                            for feat in f_data.get("features", []):
+                                props = feat.get("properties", {})
+                                geom = feat.get("geometry", {})
+                                coords = geom.get("coordinates", [lon, lat])
+                                f_lon, f_lat = coords[0], coords[1]
+                                meta = props.get("metadata") or {}
+                                phone = meta.get("phone") or meta.get("telephone") or props.get("phone") or props.get("telephone")
+                                mb_id = props.get("mapbox_id") or props.get("id") or len(results)
+                                cat_results.append(
+                                    {
+                                        "id": f"fac-mb-{mb_id}",
+                                        "external_id": f"fac-mb-{mb_id}",
+                                        "name": props.get("name") or "Nearby Facility",
+                                        "name_en": props.get("name") or "Nearby Facility",
+                                        "facility_type": category_type,
+                                        "lat": f_lat,
+                                        "lon": f_lon,
+                                        "address": props.get("full_address") or props.get("address"),
+                                        "contact_phone": phone,
+                                        "phone": phone,
+                                        "is_24x7": True,
+                                        "is_operational": True,
+                                        "details": {"staffing": "Mapbox Verified POI"},
+                                    }
+                                )
+                    results.extend(cat_results)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("mapbox_fetch_error", category=category_type, error=str(exc))
+
+        return results
 
     async def _candidates(
         self, lat: float, lon: float, radius_m: int, facility_types: list[str] | None
@@ -170,3 +337,4 @@ class FacilityService:
             "wheelchair_accessible": facility.wheelchair_accessible,
             "details": facility.details,
         }
+

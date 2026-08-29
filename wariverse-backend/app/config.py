@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     llm_enabled: bool = True
     llm_max_history_turns: int = 8
 
+    # --- mapbox ------------------------------------------------------------
+    mapbox_access_token: str | None = None
+
     # --- auth --------------------------------------------------------------
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
@@ -96,8 +99,8 @@ class Settings(BaseSettings):
     supported_languages: list[str] = Field(
         default_factory=lambda: ["mr", "hi", "en", "kn", "te"]
     )
-    facility_default_radius_m: int = 1000
-    facility_max_radius_m: int = 20000
+    facility_default_radius_m: int = 10000
+    facility_max_radius_m: int = 50000
     facility_categories: list[str] = Field(
         default_factory=lambda: [
             "medical", "water", "toilet", "rest", "food", "accommodation",
