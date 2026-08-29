@@ -2,25 +2,55 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
+from redis.exceptions import RedisError
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.data.i18n import t
-from app.deps import DbSession, Language
-from app.models.db_models import LostFoundReport
+from app.deps import DbSession, Language, get_session_service
+from app.models.db_models import LOST_FOUND_SEQUENCE, LostFoundReport
 from app.models.schemas import LostFoundCreate, LostFoundResponse
-from app.utils import generate_ref_id
+from app.redis_client import get_redis
+from app.services.session_service import SessionService
+from app.utils import now_ist
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/lost-found", tags=["lost-found"])
 
-_MAX_REF_ATTEMPTS = 5
+# The admin dashboard subscribes to this for a live queue of new reports.
+LOST_FOUND_CHANNEL = "wv:lost_found:reports"
+
+# Stored status → the label the pilgrim reads.
+STATUS_LABELS = {
+    "OPEN": "lost_found_status_open",
+    "IN_PROGRESS": "lost_found_status_in_progress",
+    "MATCHED": "lost_found_status_matched",
+    "RESOLVED": "lost_found_status_resolved",
+    "CLOSED": "lost_found_status_closed",
+}
+
+
+async def allocate_reference_id(db: AsyncSession) -> str:
+    """Next human-readable reference, e.g. `WF-2026-00124`.
+
+    Drawn from a Postgres sequence rather than a random string so two desks
+    filing at the same moment can never mint the same id, and so a pilgrim
+    reading it back over a phone gets a short, unambiguous number.
+
+    The counter is monotonic across years by design — resetting it on 1 January
+    would need a lock to stay collision-free, and the year already disambiguates.
+    """
+    from sqlalchemy import text
+
+    number = (await db.execute(text(f"SELECT nextval('{LOST_FOUND_SEQUENCE}')"))).scalar_one()
+    return f"WF-{now_ist():%Y}-{number:05d}"
 
 
 @router.post(
@@ -34,6 +64,7 @@ async def create_report(
     payload: LostFoundCreate,
     db: DbSession,
     language: Language,
+    sessions: Annotated[SessionService, Depends(get_session_service)],
 ) -> LostFoundResponse:
     if db is None:
         # Losing a report is worse than an error the client can retry with.
@@ -44,63 +75,48 @@ async def create_report(
         )
 
     lang = payload.language or language
-    report: LostFoundReport | None = None
 
-    for _ in range(_MAX_REF_ATTEMPTS):
-        candidate = LostFoundReport(
-            ref_id=generate_ref_id("WV"),
-            report_type=payload.report_type,
-            status="open",
-            subject_name=payload.subject_name,
-            subject_age=payload.subject_age,
-            description=payload.description,
-            distinguishing_marks=payload.distinguishing_marks,
-            last_seen_location=payload.last_seen_location,
-            last_seen_lat=payload.last_seen_lat,
-            last_seen_lon=payload.last_seen_lon,
-            last_seen_at=payload.last_seen_at,
-            reporter_name=payload.reporter_name,
-            contact_phone=payload.contact_phone,
-            photo_url=payload.photo_url,
-            language=lang,
-            assigned_desk="Wari Control Room",
-        )
-        db.add(candidate)
-        try:
-            await db.commit()
-        except IntegrityError:
-            # Reference ids are short enough to collide occasionally; retry.
-            await db.rollback()
-            continue
-        await db.refresh(candidate)
-        report = candidate
-        break
+    # The client sends its opaque session string; resolve it to the real row so
+    # a volunteer can read the conversation this report came out of.
+    session_uuid = None
+    if payload.session_id:
+        state = await sessions.resolve(payload.session_id)
+        if await sessions.ensure_row(state):
+            session_uuid = state.session_id
 
-    if report is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="could not allocate a reference id, please retry",
-        )
-
-    log.info(
-        "lost_found_created",
-        ref_id=report.ref_id,
-        report_type=report.report_type,
-        has_photo=bool(report.photo_url),
+    report = LostFoundReport(
+        reference_id=await allocate_reference_id(db),
+        incident_type=payload.incident_type,
+        description=payload.description,
+        reporter_phone=payload.reporter_phone,
+        last_seen_location=payload.last_seen_location,
+        session_id=session_uuid,
+        status="OPEN",
     )
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
+
+    log.warning(
+        "lost_found_created",
+        reference_id=report.reference_id,
+        incident_type=report.incident_type,
+        last_seen_location=report.last_seen_location,
+    )
+    await _notify_dashboard(report)
     return _to_response(report, lang)
 
 
 @router.get(
-    "/{ref_id}",
+    "/{reference_id}",
     response_model=LostFoundResponse,
-    summary="Look up a report by its reference id",
+    summary="Current status of a report",
     responses={404: {"description": "Unknown reference id"}},
 )
 async def get_report(
     db: DbSession,
     language: Language,
-    ref_id: Annotated[str, Path(max_length=16, examples=["WV-7KQ4XM"])],
+    reference_id: Annotated[str, Path(max_length=20, examples=["WF-2026-00124"])],
 ) -> LostFoundResponse:
     if db is None:
         raise HTTPException(
@@ -109,42 +125,65 @@ async def get_report(
 
     report = (
         await db.execute(
-            select(LostFoundReport).where(LostFoundReport.ref_id == ref_id.strip().upper())
+            select(LostFoundReport).where(
+                LostFoundReport.reference_id == reference_id.strip().upper()
+            )
         )
     ).scalar_one_or_none()
 
     if report is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown reference id: {ref_id}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"unknown reference id: {reference_id}",
         )
 
-    return _to_response(report, report.language or language)
+    return _to_response(report, language)
+
+
+# --- helpers ----------------------------------------------------------------
 
 
 def _to_response(report: LostFoundReport, language: str) -> LostFoundResponse:
     return LostFoundResponse(
-        ref_id=report.ref_id,
-        report_type=report.report_type,  # type: ignore[arg-type]
-        status=report.status,  # type: ignore[arg-type]
-        subject_name=report.subject_name,
-        subject_age=report.subject_age,
+        reference_id=report.reference_id,
+        status=t(STATUS_LABELS.get(report.status, "lost_found_status_open"), language),
+        next_action=t("lost_found_next_action", language),
+        message=t("lost_found_filed", language),
+        incident_type=report.incident_type,  # type: ignore[arg-type]
         description=report.description,
-        distinguishing_marks=report.distinguishing_marks,
         last_seen_location=report.last_seen_location,
-        last_seen_at=report.last_seen_at,
-        reporter_name=report.reporter_name,
-        contact_phone=report.contact_phone,
-        photo_url=report.photo_url,
-        language=language,  # type: ignore[arg-type]
-        assigned_desk=report.assigned_desk,
-        resolution_note=report.resolution_note,
-        helpline=settings.wari_control_room,
-        message=t(
-            "lost_found_created",
-            language,
-            ref_id=report.ref_id,
-            helpline=settings.wari_control_room,
-        ),
         created_at=report.created_at,
         updated_at=report.updated_at,
     )
+
+
+async def _notify_dashboard(report: LostFoundReport) -> None:
+    """Publish to the control-room dashboard; best effort by design.
+
+    The report is already committed, so a failed publish costs the dashboard a
+    live update, not the report itself.
+    """
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        await client.publish(
+            LOST_FOUND_CHANNEL,
+            json.dumps(
+                {
+                    "reference_id": report.reference_id,
+                    "incident_type": report.incident_type,
+                    "description": report.description,
+                    "last_seen_location": report.last_seen_location,
+                    "reporter_phone": report.reporter_phone,
+                    "created_at": report.created_at.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+    except (RedisError, OSError) as exc:
+        log.warning(
+            "lost_found_publish_failed",
+            reference_id=report.reference_id,
+            error=str(exc),
+        )

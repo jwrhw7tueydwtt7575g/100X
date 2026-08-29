@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, status
 
 from app.deps import Language, get_sos_service
 from app.models.schemas import SosEventResponse, SosTriggerRequest
-from app.security import TokenPayload, get_optional_user
+from app.security import TokenPayload, get_optional_token
 from app.services.sos_service import SosService
 
 router = APIRouter(prefix="/sos", tags=["sos"])
@@ -24,7 +24,7 @@ async def trigger_sos(
     payload: SosTriggerRequest,
     sos: Annotated[SosService, Depends(get_sos_service)],
     language: Language,
-    caller: Annotated[TokenPayload | None, Depends(get_optional_user)] = None,
+    caller: Annotated[TokenPayload | None, Depends(get_optional_token)] = None,
 ) -> SosEventResponse:
     # Deliberately unauthenticated: an unregistered pilgrim in trouble must
     # still be able to call for help. A token, when present, attributes the
@@ -35,8 +35,8 @@ async def trigger_sos(
         emergency_type=payload.emergency_type,
         language=payload.language or language,
         user_id=payload.user_id or (caller.user_id if caller else None),
-        session_id=payload.session_id,
-        phone=payload.phone or (caller.phone if caller else None),
+        session_id=payload.session_id or (caller.session_id if caller else None),
+        phone=payload.phone or (caller.phone_number if caller else None),
         description=payload.description,
         accuracy_m=payload.accuracy_m,
     )

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # --- llm ---------------------------------------------------------------
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o"
     openai_timeout_seconds: float = 20.0
     llm_enabled: bool = True
     llm_max_history_turns: int = 8
@@ -48,11 +48,25 @@ class Settings(BaseSettings):
     # --- auth --------------------------------------------------------------
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 60 * 24 * 30
-    otp_ttl_seconds: int = 300
+    jwt_expire_minutes: int = 60 * 24 * 30  # 30 days
+    otp_ttl_seconds: int = 600  # 10 minutes
     otp_max_attempts: int = 5
     otp_length: int = 6
     otp_debug_echo: bool = True
+    # Max OTPs per phone per rolling window — SMS costs money and an unmetered
+    # send endpoint is an SMS-bombing tool.
+    otp_rate_limit: int = 3
+    otp_rate_window_seconds: int = 3600
+
+    # --- sms ---------------------------------------------------------------
+    # console | fast2sms | twilio
+    sms_provider: str = "console"
+    fast2sms_api_key: str | None = None
+    fast2sms_sender_id: str = "FSTSMS"
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    twilio_from_number: str | None = None
+    sms_timeout_seconds: float = 10.0
 
     # --- cors --------------------------------------------------------------
     cors_origins: list[str] = Field(
@@ -66,14 +80,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
 
+    # --- admin -------------------------------------------------------------
+    # Unset means the admin endpoints refuse every request. There is no
+    # "no key configured, so allow everything" mode.
+    admin_api_key: str | None = None
+
+    # --- crowd simulator ---------------------------------------------------
+    # Stand-in for the CCTV feed. Run it in ONE process only — see
+    # app/services/crowd_simulator.py.
+    crowd_simulator_enabled: bool = True
+    crowd_simulator_interval_seconds: int = 300
+
     # --- domain ------------------------------------------------------------
     default_language: str = "mr"
     supported_languages: list[str] = Field(
         default_factory=lambda: ["mr", "hi", "en", "kn", "te"]
     )
-    facility_default_radius_m: int = 1500
+    facility_default_radius_m: int = 1000
     facility_max_radius_m: int = 20000
-    walking_speed_kmph: float = 4.0
+    facility_categories: list[str] = Field(
+        default_factory=lambda: [
+            "medical", "water", "toilet", "rest", "food", "accommodation",
+        ]
+    )
+    # 2.5 km/h, not the usual 5: during the Wari the crowd sets the pace.
+    walking_speed_kmph: float = 2.5
     emergency_helpline: str = "112"
     wari_control_room: str = "1800-233-1000"
 

@@ -1,6 +1,7 @@
 """API routers."""
 
 from app.routers import (
+    admin,
     auth,
     conversation,
     crowd,
@@ -12,6 +13,7 @@ from app.routers import (
 )
 
 __all__ = [
+    "admin",
     "auth",
     "conversation",
     "crowd",

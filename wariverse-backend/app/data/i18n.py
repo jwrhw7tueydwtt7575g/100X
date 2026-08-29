@@ -110,7 +110,8 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
         "en": "{zone} is heavily crowded. Expected wait about {wait} minutes. Consider "
               "coming later or using an alternative.",
     },
-    "crowd_critical": {
+    # Keyed by `crowd_` + the lowercased density status from the DB.
+    "crowd_very_high": {
         "mr": "धोका: {zone} येथे अतिशय दाट गर्दी आहे. कृपया या भागात जाऊ नका, गर्दीच्या "
               "दिशेने ढकलले जाऊ नका आणि स्वयंसेवकांच्या सूचना पाळा.",
         "hi": "चेतावनी: {zone} पर अत्यधिक भीड़ है। कृपया इस क्षेत्र में न जाएँ, भीड़ के दबाव "
@@ -139,6 +140,25 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
         "hi": "{name} पहुँच गए। यही आपका अंतिम पड़ाव है।",
         "en": "You arrive at {name} — this is your destination.",
     },
+    "route_walk_minutes": {
+        "mr": "{minutes} मिनिटे चालत", "hi": "{minutes} मिनट पैदल",
+        "en": "{minutes} min walk",
+    },
+    "route_current_location": {
+        "mr": "सध्याचे ठिकाण", "hi": "वर्तमान स्थान", "en": "Current location",
+    },
+    "route_selected_destination": {
+        "mr": "निवडलेले ठिकाण", "hi": "चयनित स्थान", "en": "Selected destination",
+    },
+    "congestion_high": {
+        "mr": "जास्त गर्दी", "hi": "अधिक भीड़", "en": "high congestion",
+    },
+    "congestion_very_high": {
+        "mr": "अतिशय दाट गर्दी", "hi": "अत्यधिक भीड़", "en": "very high congestion",
+    },
+    # --- facilities --------------------------------------------------------
+    "facility_open": {"mr": "सुरू", "hi": "खुला", "en": "Open"},
+    "facility_closed": {"mr": "बंद", "hi": "बंद", "en": "Closed"},
     "route_congested": {
         "mr": "{zone} मार्गावर गर्दी आहे; पुढे हळू चालावे लागेल.",
         "hi": "{zone} मार्ग पर भीड़ है; आगे धीरे चलना पड़ेगा.",
@@ -151,6 +171,31 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
         "en": "{name} — the mukh darshan queue is running about {wait} minutes.",
     },
     # --- lost & found ------------------------------------------------------
+    "lost_found_status_open": {
+        "mr": "शोध सुरू", "hi": "खोज जारी", "en": "Searching",
+    },
+    "lost_found_status_in_progress": {
+        "mr": "स्वयंसेवक शोधत आहेत", "hi": "स्वयंसेवक खोज रहे हैं",
+        "en": "Volunteers searching",
+    },
+    "lost_found_status_matched": {
+        "mr": "संभाव्य माहिती मिळाली", "hi": "संभावित सुराग मिला",
+        "en": "Possible match found",
+    },
+    "lost_found_status_resolved": {
+        "mr": "पुन्हा भेट झाली", "hi": "मिलन हो गया", "en": "Reunited",
+    },
+    "lost_found_status_closed": {"mr": "बंद", "hi": "बंद", "en": "Closed"},
+    "lost_found_next_action": {
+        "mr": "शेवटच्या ठिकाणाजवळ थांबा आणि फोन सुरू ठेवा.",
+        "hi": "अंतिम स्थान के पास रुकें और फोन चालू रखें।",
+        "en": "Stay near the last known location and keep your phone reachable.",
+    },
+    "lost_found_filed": {
+        "mr": "तुमची तक्रार स्वयंसेवक पथकाला पाठवली आहे.",
+        "hi": "आपकी शिकायत स्वयंसेवक टीम को भेज दी गई है।",
+        "en": "Your report has been shared with volunteer team.",
+    },
     "lost_found_created": {
         "mr": "तक्रार नोंदवली. संदर्भ क्रमांक {ref_id}. हा क्रमांक जपून ठेवा आणि "
               "{helpline} वर संपर्क साधा. जवळच्या हरवले-सापडले कक्षात नोंद पोहोचली आहे.",
@@ -158,6 +203,60 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
               "{helpline} पर संपर्क करें। नज़दीकी खोया-पाया केंद्र को सूचना भेज दी गई है।",
         "en": "Report registered. Reference number {ref_id}. Keep this number safe and "
               "call {helpline}. The nearest lost & found desk has been notified.",
+    },
+    "lost_found_offline": {
+        "mr": "सध्या नोंद करता येत नाही. कृपया लगेच {helpline} वर कॉल करा किंवा "
+              "जवळच्या हरवले-सापडले कक्षात जा.",
+        "hi": "अभी दर्ज नहीं हो पा रहा। कृपया तुरंत {helpline} पर कॉल करें या "
+              "नज़दीकी खोया-पाया केंद्र जाएँ।",
+        "en": "I can't file the report right now. Please call {helpline} immediately "
+              "or go to the nearest lost & found desk.",
+    },
+    # --- forecast ----------------------------------------------------------
+    "forecast_recommendation": {
+        "mr": "{zone} येथे सुमारे {time} वाजता सर्वात कमी गर्दी असण्याची शक्यता आहे.",
+        "hi": "{zone} पर लगभग {time} बजे सबसे कम भीड़ रहने की संभावना है।",
+        "en": "{zone} is likely to be quietest around {time}.",
+    },
+    "forecast_before": {
+        "mr": "{zone} ला जाण्यासाठी {time} पूर्वीची वेळ सर्वोत्तम आहे.",
+        "hi": "{zone} जाने के लिए {time} से पहले का समय सबसे अच्छा है।",
+        "en": "Before {time} is the best time to visit {zone}.",
+    },
+    "forecast_after": {
+        "mr": "सध्या गर्दी आहे; {zone} ला जाण्यासाठी {time} नंतरची वेळ सर्वोत्तम आहे.",
+        "hi": "अभी भीड़ है; {zone} जाने के लिए {time} के बाद का समय सबसे अच्छा है।",
+        "en": "It's busy now — after {time} is the best time to visit {zone}.",
+    },
+    "forecast_all_clear": {
+        "mr": "{zone} येथे पुढील काही तास गर्दी कमी राहण्याची शक्यता आहे.",
+        "hi": "{zone} पर अगले कुछ घंटे भीड़ कम रहने की संभावना है।",
+        "en": "{zone} should stay comfortable for the next several hours.",
+    },
+    "forecast_quietest": {
+        "mr": "{zone} येथे {time} च्या सुमारास तुलनेने कमी गर्दी असेल.",
+        "hi": "{zone} पर {time} के आसपास अपेक्षाकृत कम भीड़ रहेगी।",
+        "en": "{zone} is relatively quietest around {time}.",
+    },
+    "forecast_updated": {
+        "mr": "अद्ययावत {age}", "hi": "अपडेट {age}", "en": "Updated {age}",
+    },
+    # --- escalation --------------------------------------------------------
+    "escalation_waiting": {
+        "mr": "मी स्वयंसेवकाला कळवले आहे. ते लवकरच संपर्क करतील. तातडीचे असल्यास "
+              "{helpline} वर कॉल करा.",
+        "hi": "मैंने स्वयंसेवक को सूचित कर दिया है। वे जल्द संपर्क करेंगे। ज़रूरी हो तो "
+              "{helpline} पर कॉल करें।",
+        "en": "I've flagged this for a volunteer — they'll reach out shortly. If it's "
+              "urgent, call {helpline}.",
+    },
+    "escalation_offline": {
+        "mr": "सध्या स्वयंसेवक कक्ष बंद आहे (पहाटे ५ ते रात्री ११ सुरू). तातडीचे असल्यास "
+              "{helpline} वर कॉल करा.",
+        "hi": "अभी स्वयंसेवक कक्ष बंद है (सुबह 5 से रात 11 तक खुला)। ज़रूरी हो तो "
+              "{helpline} पर कॉल करें।",
+        "en": "The volunteer desk is closed right now (open 5am-11pm). If it's urgent, "
+              "call {helpline}.",
     },
     # --- auth --------------------------------------------------------------
     "otp_sent": {

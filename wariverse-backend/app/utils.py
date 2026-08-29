@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-import string
+import secrets
 from datetime import UTC, datetime, time, timedelta, timezone
 
 # The Wari happens entirely in Maharashtra and IST has no DST, so a fixed
@@ -28,7 +28,48 @@ def generate_ref_id(prefix: str = "WV", length: int = 6) -> str:
 
 
 def generate_otp(length: int = 6) -> str:
-    return "".join(random.choices(string.digits, k=length))
+    """Cryptographically random code.
+
+    `secrets`, not `random`: Mersenne Twister output is reconstructable from
+    enough observed values, and here that would mean predicting login codes.
+    """
+    return "".join(secrets.choice("0123456789") for _ in range(length))
+
+
+_RELATIVE_TIME: dict[str, dict[str, str]] = {
+    "mr": {
+        "now": "आत्ताच", "min": "{n} मिनिटांपूर्वी", "hr": "{n} तासांपूर्वी",
+        "day": "{n} दिवसांपूर्वी",
+    },
+    "hi": {
+        "now": "अभी", "min": "{n} मिनट पहले", "hr": "{n} घंटे पहले",
+        "day": "{n} दिन पहले",
+    },
+    "en": {"now": "just now", "min": "{n} min ago", "hr": "{n} hr ago", "day": "{n} days ago"},
+}
+
+
+def humanize_age(moment: datetime, language: str = "en", now: datetime | None = None) -> str:
+    """Relative age of a timestamp, e.g. "2 min ago".
+
+    The frontend renders `updated_at` verbatim, so it has to be a phrase rather
+    than an ISO timestamp — and a localized one, since a Marathi speaker should
+    not be reading English next to a Marathi zone name.
+    """
+    words = _RELATIVE_TIME.get(language, _RELATIVE_TIME["en"])
+    reference = now or now_utc()
+
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    seconds = max(0, int((reference - moment).total_seconds()))
+
+    if seconds < 60:
+        return words["now"]
+    if seconds < 3600:
+        return words["min"].format(n=seconds // 60)
+    if seconds < 86_400:
+        return words["hr"].format(n=seconds // 3600)
+    return words["day"].format(n=seconds // 86_400)
 
 
 def parse_hhmm(value: str | None) -> time | None:

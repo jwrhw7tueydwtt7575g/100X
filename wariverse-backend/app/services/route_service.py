@@ -1,9 +1,17 @@
-"""Turn-by-turn guidance along the palkhi route.
+"""Walking guidance to the temple along three precomputed pilgrim routes.
 
-This is deliberately not a general-purpose router: pilgrims walk a fixed,
-published corridor of halts (Alandi → … → Wakhari → Pandharpur). Guidance
-snaps the user to the nearest waypoint and walks the ordered list towards the
-destination, adding crowd warnings from `CrowdService` on the way.
+This is deliberately not a general-purpose router. Pilgrims walk a small number
+of published approaches through a dense crowd; sending someone down an
+arbitrary shortest path would route them through barricades and side lanes in
+the dark. Guidance therefore picks between three surveyed corridors and says
+which zones to avoid.
+
+Selection prefers a route with no HIGH/VERY_HIGH zone on it, then the shortest.
+If every route is congested it takes the least-congested one and still lists
+what to avoid — there is always an answer, because "no route" helps nobody.
+
+Walking speed is 2.5 km/h, not the usual 5: during the Wari the crowd sets the
+pace.
 """
 
 from __future__ import annotations
@@ -11,48 +19,92 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.data.i18n import t
-from app.data.reference import (
-    DEFAULT_ROUTE_ID,
-    ROUTE_WAYPOINTS,
-    ZONES_BY_ID,
-    localized_name,
-)
-from app.models.db_models import RouteWaypoint
-from app.models.schemas import (
-    GeoPoint,
-    RouteGuidanceResponse,
-    RouteStep,
-    RouteWarning,
-)
+from app.data.reference import ZONES_BY_ID, localized_name
+from app.models.schemas import LabelledPoint, RouteGuidanceResponse, Waypoint
 from app.services.crowd_service import CONGESTION_FACTOR, CrowdService, ZoneNotFoundError
-from app.services.geo import bearing_label, haversine_m, walk_minutes
-from app.utils import now_utc
+from app.services.geo import haversine_m
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_DESTINATION = "vitthal_temple"
+# The Vitthal temple, and the default destination for every request.
+TEMPLE_LAT = 17.6775
+TEMPLE_LON = 75.3283
+TEMPLE_LABEL = "Vitthal Temple"
 
-_DIRECTION_WORDS: dict[str, dict[str, str]] = {
-    "mr": {
-        "north": "उत्तरेकडे", "north-east": "ईशान्येकडे", "east": "पूर्वेकडे",
-        "south-east": "आग्नेयेकडे", "south": "दक्षिणेकडे", "south-west": "नैऋत्येकडे",
-        "west": "पश्चिमेकडे", "north-west": "वायव्येकडे",
+WALKING_SPEED_KMPH = 2.5
+
+# --- the three precomputed approaches ---------------------------------------
+# Each ends at the temple. `zones` are the monitored areas the corridor passes
+# through, used both to score congestion and to build `avoid_areas`.
+ROUTES: list[dict[str, Any]] = [
+    {
+        "route_id": "east-gate-1",
+        "label": "East approach via Gate 1",
+        "zones": ["main-road", "gate-1"],
+        "coordinates": [
+            (17.6771, 75.3325),
+            (17.6776, 75.3316),
+            (17.6784, 75.3309),
+            (17.6790, 75.3308),
+            (17.6786, 75.3296),
+            (17.6779, 75.3288),
+            (TEMPLE_LAT, TEMPLE_LON),
+        ],
     },
-    "hi": {
-        "north": "उत्तर", "north-east": "उत्तर-पूर्व", "east": "पूर्व",
-        "south-east": "दक्षिण-पूर्व", "south": "दक्षिण", "south-west": "दक्षिण-पश्चिम",
-        "west": "पश्चिम", "north-west": "उत्तर-पश्चिम",
+    {
+        "route_id": "north-gate-2",
+        "label": "North approach via Gate 2",
+        "zones": ["bhima-ghat", "gate-2"],
+        "coordinates": [
+            (17.6812, 75.3262),
+            (17.6806, 75.3272),
+            (17.6800, 75.3283),
+            (17.6795, 75.3295),
+            (17.6787, 75.3292),
+            (TEMPLE_LAT, TEMPLE_LON),
+        ],
     },
-}
+    {
+        "route_id": "south-gate-3",
+        "label": "South approach via Gate 3",
+        "zones": ["gate-3"],
+        "coordinates": [
+            (17.6765, 75.3320),
+            (17.6768, 75.3310),
+            (17.6772, 75.3303),
+            (17.6779, 75.3301),
+            (17.6777, 75.3292),
+            (TEMPLE_LAT, TEMPLE_LON),
+        ],
+    },
+]
+
+ROUTES_BY_ID = {route["route_id"]: route for route in ROUTES}
+
+_BUSY = ("HIGH", "VERY_HIGH")
 
 
 class DestinationNotFoundError(LookupError):
-    """Raised when the requested destination is not on the route."""
+    """Raised when no route reaches the requested destination."""
+
+
+def path_length_m(coordinates: list[tuple[float, float]]) -> float:
+    return sum(
+        haversine_m(a[0], a[1], b[0], b[1])
+        for a, b in zip(coordinates, coordinates[1:], strict=False)
+    )
+
+
+def format_distance(metres: float) -> str:
+    return f"{metres / 1000:.1f} km"
+
+
+def format_duration(metres: float, language: str = "en") -> str:
+    minutes = max(1, round((metres / 1000) / WALKING_SPEED_KMPH * 60))
+    return t("route_walk_minutes", language, minutes=minutes)
 
 
 class RouteService:
@@ -64,210 +116,145 @@ class RouteService:
 
     async def guidance(
         self,
-        lat: float,
-        lon: float,
-        destination: str | None = None,
-        route_id: str = DEFAULT_ROUTE_ID,
-        language: str = "mr",
+        origin_lat: float,
+        origin_lng: float,
+        dest_lat: float | None = None,
+        dest_lng: float | None = None,
+        language: str = "en",
     ) -> RouteGuidanceResponse:
-        waypoints = await self._waypoints(route_id)
-        if not waypoints:
-            raise DestinationNotFoundError(route_id)
+        dest_lat = TEMPLE_LAT if dest_lat is None else dest_lat
+        dest_lng = TEMPLE_LON if dest_lng is None else dest_lng
 
-        destination_key = (destination or DEFAULT_DESTINATION).strip().lower()
-        dest_index = self._find_destination(waypoints, destination_key)
-        start_index = self._nearest_index(waypoints, lat, lon)
-
-        # The palkhi walks one way, but a pilgrim may be ahead of their target
-        # (e.g. standing at the temple asking for the ghat), so allow both
-        # directions along the ordered corridor.
-        if start_index <= dest_index:
-            leg = waypoints[start_index : dest_index + 1]
-        else:
-            leg = list(reversed(waypoints[dest_index : start_index + 1]))
-
-        readings = await self._zone_readings(leg)
-        steps, total_m = self._build_steps(lat, lon, leg, readings, language)
-
-        worst = self._worst_congestion(readings)
-        eta = walk_minutes(
-            total_m, settings.walking_speed_kmph, CONGESTION_FACTOR.get(worst, 1.0)
+        statuses = await self._zone_statuses()
+        chosen, joined, total_m = self._choose(
+            origin_lat, origin_lng, dest_lat, dest_lng, statuses
         )
-        destination_wp = leg[-1] if leg else waypoints[dest_index]
+
+        log.info(
+            "route_selected",
+            route_id=chosen["route_id"],
+            distance_m=round(total_m),
+            congested_zones=[z for z in chosen["zones"] if statuses.get(z) in _BUSY],
+        )
 
         return RouteGuidanceResponse(
-            route_id=route_id,
-            origin=GeoPoint(lat=lat, lon=lon),
-            destination_name=localized_name(destination_wp, language),
-            destination=GeoPoint(lat=destination_wp["lat"], lon=destination_wp["lon"]),
-            distance_km=round(total_m / 1000, 2),
-            eta_minutes=eta,
-            congestion_level=worst,  # type: ignore[arg-type]
-            language=language,  # type: ignore[arg-type]
-            steps=steps,
-            warnings=self._warnings(readings, language),
-            updated_at=now_utc(),
+            origin=LabelledPoint(
+                latitude=origin_lat,
+                longitude=origin_lng,
+                label=t("route_current_location", language),
+            ),
+            destination=LabelledPoint(
+                latitude=dest_lat,
+                longitude=dest_lng,
+                label=self._destination_label(dest_lat, dest_lng, language),
+            ),
+            route_coordinates=[
+                Waypoint(latitude=lat, longitude=lon) for lat, lon in joined
+            ],
+            estimated_time=format_duration(total_m, language),
+            distance=format_distance(total_m),
+            avoid_areas=self._avoid_areas(statuses, language),
+            route_id=chosen["route_id"],
         )
 
     # --- internals ---------------------------------------------------------
 
-    async def _waypoints(self, route_id: str) -> list[dict[str, Any]]:
-        if self.db is not None:
+    async def _zone_statuses(self) -> dict[str, str]:
+        """Current status per zone, straight from the crowd cache."""
+        statuses: dict[str, str] = {}
+        for zone_id in ZONES_BY_ID:
             try:
-                rows = (
-                    (
-                        await self.db.execute(
-                            select(RouteWaypoint)
-                            .where(RouteWaypoint.route_id == route_id)
-                            .order_by(RouteWaypoint.sequence)
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("route_db_read_failed", route_id=route_id, error=str(exc))
-                rows = []
-
-            if rows:
-                return [
-                    {
-                        "sequence": w.sequence,
-                        "name_en": w.name_en,
-                        "name_mr": w.name_mr,
-                        "name_hi": w.name_hi,
-                        "lat": w.lat,
-                        "lon": w.lon,
-                        "zone_ref": w.zone_ref,
-                        "is_halt": w.is_halt,
-                        "landmark": w.landmark,
-                    }
-                    for w in rows
-                ]
-
-        return [dict(w) for w in ROUTE_WAYPOINTS] if route_id == DEFAULT_ROUTE_ID else []
-
-    @staticmethod
-    def _slug(value: str) -> str:
-        return "".join(ch for ch in value.lower() if ch.isalnum())
-
-    def _find_destination(self, waypoints: list[dict[str, Any]], key: str) -> int:
-        slug = self._slug(key)
-        for index, wp in enumerate(waypoints):
-            candidates = {
-                self._slug(wp.get("zone_ref") or ""),
-                self._slug(wp["name_en"]),
-                self._slug(wp.get("name_mr") or ""),
-                self._slug(wp.get("name_hi") or ""),
-            }
-            if slug in candidates - {""}:
-                return index
-
-        # A destination that is a zone but not a waypoint (e.g. the bus stand)
-        # resolves to the closest waypoint on the corridor.
-        zone = ZONES_BY_ID.get(key)
-        if zone:
-            return self._nearest_index(waypoints, zone["lat"], zone["lon"])
-
-        raise DestinationNotFoundError(key)
-
-    @staticmethod
-    def _nearest_index(waypoints: list[dict[str, Any]], lat: float, lon: float) -> int:
-        distances = [haversine_m(lat, lon, w["lat"], w["lon"]) for w in waypoints]
-        return distances.index(min(distances))
-
-    async def _zone_readings(self, leg: list[dict[str, Any]]) -> dict[str, Any]:
-        readings: dict[str, Any] = {}
-        for wp in leg:
-            zone_ref = wp.get("zone_ref")
-            if not zone_ref or zone_ref in readings:
+                statuses[zone_id] = (await self.crowd.read_zone(zone_id)).status
+            except ZoneNotFoundError:  # pragma: no cover — ids come from the registry
                 continue
-            try:
-                readings[zone_ref] = await self.crowd.read_zone(zone_ref)
-            except ZoneNotFoundError:
-                continue
-        return readings
+        return statuses
 
-    def _build_steps(
+    def _choose(
         self,
-        lat: float,
-        lon: float,
-        leg: list[dict[str, Any]],
-        readings: dict[str, Any],
-        language: str,
-    ) -> tuple[list[RouteStep], float]:
-        steps: list[RouteStep] = []
-        cursor = (lat, lon)
-        cumulative = 0.0
+        origin_lat: float,
+        origin_lng: float,
+        dest_lat: float,
+        dest_lng: float,
+        statuses: dict[str, str],
+    ) -> tuple[dict[str, Any], list[tuple[float, float]], float]:
+        """Pick a corridor, then walk from the origin onto it and off at the end."""
+        best: tuple[float, int, dict, list, float] | None = None
 
-        for index, wp in enumerate(leg):
-            distance = haversine_m(cursor[0], cursor[1], wp["lat"], wp["lon"])
-            # Skip a zero-length first hop when the pilgrim is already standing
-            # on the waypoint, unless it is also the destination.
-            if index == 0 and distance < 50 and len(leg) > 1:
-                cursor = (wp["lat"], wp["lon"])
-                continue
+        for route in ROUTES:
+            coordinates = list(route["coordinates"])
 
-            cumulative += distance
-            name = localized_name(wp, language)
-            is_last = index == len(leg) - 1
-
-            if is_last:
-                instruction = t("route_arrive", language, name=name)
-            else:
-                direction = bearing_label(cursor[0], cursor[1], wp["lat"], wp["lon"])
-                instruction = t(
-                    "route_step",
-                    language,
-                    name=name,
-                    direction=_DIRECTION_WORDS.get(language, {}).get(direction, direction),
-                    distance=int(round(distance)),
-                )
-
-            reading = readings.get(wp.get("zone_ref") or "")
-            steps.append(
-                RouteStep(
-                    sequence=len(steps) + 1,
-                    instruction=instruction,
-                    name=name,
-                    lat=wp["lat"],
-                    lon=wp["lon"],
-                    distance_m=int(round(distance)),
-                    cumulative_distance_m=int(round(cumulative)),
-                    is_halt=bool(wp.get("is_halt")),
-                    landmark=wp.get("landmark"),
-                    congestion=getattr(reading, "density_level", None),
-                )
+            # Join the corridor at whichever surveyed point is closest, rather
+            # than always at its far end — but never at the LAST point, which
+            # would reduce the "route" to a straight line to the destination
+            # and send a pilgrim across whatever lies between.
+            entry = min(
+                range(len(coordinates) - 1),
+                key=lambda i: haversine_m(origin_lat, origin_lng, *coordinates[i]),
             )
-            cursor = (wp["lat"], wp["lon"])
+            leg = coordinates[entry:]
+            joined = [(origin_lat, origin_lng), *leg]
 
-        return steps, cumulative
+            # A destination away from the temple gets a final hop off the corridor.
+            if (
+                haversine_m(dest_lat, dest_lng, TEMPLE_LAT, TEMPLE_LON) > 50
+                and (dest_lat, dest_lng) != joined[-1]
+            ):
+                joined.append((dest_lat, dest_lng))
+
+            distance = path_length_m(joined)
+
+            # The hop from the pilgrim onto the corridor is unsurveyed ground —
+            # count it twice so a corridor they are already standing on beats
+            # one that is nominally shorter but starts with a 400 m scramble.
+            join_distance = haversine_m(origin_lat, origin_lng, *coordinates[entry])
+
+            # A route is as bad as its WORST point. Summing over zones would
+            # instead reward routes that pass through fewer zones, which has
+            # nothing to do with how crowded they are.
+            penalty = max(
+                (
+                    CONGESTION_FACTOR.get(statuses.get(zone, "LOW"), 1.0)
+                    for zone in route["zones"]
+                ),
+                default=1.0,
+            )
+            busy_count = sum(1 for zone in route["zones"] if statuses.get(zone) in _BUSY)
+
+            # Congestion first, then effective distance — a clear route slightly
+            # longer beats a short one through a crush.
+            score = (busy_count, penalty * 500 + distance + join_distance)
+            if best is None or score < (best[1], best[0]):
+                best = (score[1], score[0], route, joined, distance)
+
+        assert best is not None  # ROUTES is never empty
+        return best[2], best[3], best[4]
 
     @staticmethod
-    def _worst_congestion(readings: dict[str, Any]) -> str:
-        worst = "low"
-        for reading in readings.values():
-            if CONGESTION_FACTOR.get(reading.density_level, 1.0) > CONGESTION_FACTOR[worst]:
-                worst = reading.density_level
-        return worst
+    def _avoid_areas(statuses: dict[str, str], language: str) -> list[str]:
+        """Congested zones, phrased for display: `Gate 3 — high congestion`."""
+        out: list[str] = []
+        for zone_id, status in statuses.items():
+            if status not in _BUSY:
+                continue
+            name = localized_name(ZONES_BY_ID[zone_id], language)
+            label = t(
+                "congestion_very_high" if status == "VERY_HIGH" else "congestion_high",
+                language,
+            )
+            out.append(f"{name} — {label}")
+        return out
 
     @staticmethod
-    def _warnings(readings: dict[str, Any], language: str) -> list[RouteWarning]:
-        warnings: list[RouteWarning] = []
-        for zone_id, reading in readings.items():
-            if reading.density_level not in ("high", "critical"):
-                continue
-            zone = ZONES_BY_ID.get(zone_id)
-            name = localized_name(zone, language) if zone else zone_id
-            warnings.append(
-                RouteWarning(
-                    zone_id=zone_id,
-                    severity="avoid" if reading.density_level == "critical" else "caution",
-                    message=(
-                        t("crowd_critical", language, zone=name)
-                        if reading.density_level == "critical"
-                        else t("route_congested", language, zone=name)
-                    ),
-                )
-            )
-        return warnings
+    def _destination_label(lat: float, lon: float, language: str) -> str:
+        """Name the destination if it is a place we know, else say it plainly."""
+        if haversine_m(lat, lon, TEMPLE_LAT, TEMPLE_LON) <= 120:
+            return TEMPLE_LABEL
+
+        nearest, best = None, float("inf")
+        for zone in ZONES_BY_ID.values():
+            distance = haversine_m(lat, lon, zone["lat"], zone["lon"])
+            if distance < best:
+                nearest, best = zone, distance
+        if nearest is not None and best <= 200:
+            return localized_name(nearest, language)
+        return t("route_selected_destination", language)

@@ -15,6 +15,7 @@ from app.services.llm_orchestrator import LLMOrchestrator
 from app.services.route_service import RouteService
 from app.services.session_service import SessionService
 from app.services.sos_service import SosService
+from app.services.temple_service import TempleService
 
 DbSession = Annotated[AsyncSession | None, Depends(get_db)]
 
@@ -52,6 +53,10 @@ def get_session_service(db: DbSession) -> SessionService:
 
 def get_sos_service(db: DbSession) -> SosService:
     return SosService(db)
+
+
+def get_temple_service(db: DbSession) -> TempleService:
+    return TempleService(db)
 
 
 def get_orchestrator(db: DbSession) -> LLMOrchestrator:

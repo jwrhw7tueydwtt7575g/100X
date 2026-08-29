@@ -1,106 +1,159 @@
 """Phone + OTP authentication.
 
-The OTP itself is never stored in plaintext and never written to the logs: only
-an HMAC of `phone:otp` keyed with JWT_SECRET is kept, in Redis, under the
-configured TTL. Postgres keeps a delivery audit row without the code.
+Flow: `POST /otp/send` → SMS → `POST /otp/verify` → JWT → authenticated calls.
 
-There is no SMS provider wired in — `_deliver_otp` is the single seam where one
-(MSG91, Gupshup, Twilio) plugs in. Outside production the code is echoed in the
-response so the app can be exercised end to end.
+SECURITY — read before using this with real phone numbers.
+
+`otp_codes.code` stores the six digits in plaintext, per the data spec. Read
+access to that table (a replica, a backup, a dump, a SQL injection) is enough
+to log in as any pilgrim with a code in flight. The fix needs no schema change:
+store `hash_otp(phone_number, code)` — implemented below — widen the column to
+`String(64)`, and compare digests in `verify_otp`. Recommended before launch.
+
+Codes reach the logs only when the API is also returning them as `demo_otp`
+(i.e. outside production). In production nothing logs a code.
 """
 
 from __future__ import annotations
 
 import hmac
-import json
 from datetime import timedelta
 from hashlib import sha256
-from typing import Any
-from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, HTTPException, status
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.deps import DbSession
-from app.models.db_models import OtpRequest, User
+from app.deps import DbSession, get_session_service
+from app.models.db_models import OtpCode, User
 from app.models.schemas import (
     OtpSendRequest,
     OtpSendResponse,
     OtpVerifyRequest,
+    ProfileUpdateRequest,
+    ProfileUpdateResponse,
     TokenResponse,
     UserOut,
+    UserProfile,
 )
 from app.redis_client import get_redis
-from app.security import create_access_token
+from app.security import CurrentUser, create_access_token
+from app.services.sms import send_otp_sms
 from app.utils import generate_otp, now_utc
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-OTP_PREFIX = "wv:otp:"
-COOLDOWN_PREFIX = "wv:otp:cooldown:"
-RESEND_COOLDOWN_SECONDS = 30
+RATE_PREFIX = "wv:otp:rate:"
+ATTEMPTS_PREFIX = "wv:otp:attempts:"
 
-# Dev-only fallback so the flow works before Redis is provisioned.
-_memory_otp: dict[str, dict[str, Any]] = {}
+
+# --- send -------------------------------------------------------------------
 
 
 @router.post(
     "/otp/send",
     response_model=OtpSendResponse,
-    summary="Send a login OTP to a phone number",
-    responses={429: {"description": "Requested again too soon"}},
+    summary="Send a login OTP to an Indian mobile number",
+    responses={
+        429: {"description": "Rate limit reached for this number"},
+        503: {"description": "Code store unavailable"},
+    },
 )
 async def send_otp(payload: OtpSendRequest, db: DbSession) -> OtpSendResponse:
-    phone = payload.phone
-
-    if await _in_cooldown(phone):
+    if db is None:
         raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"please wait {RESEND_COOLDOWN_SECONDS}s before requesting another code",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="code store unavailable; please retry shortly",
         )
 
-    otp = generate_otp(settings.otp_length)
-    request_id = uuid4().hex
-    record = {
-        "request_id": request_id,
-        "hash": _hash_otp(phone, otp),
-        "attempts": 0,
-        "language": payload.language or settings.default_language,
-    }
-    await _store_otp(phone, record)
-    await _set_cooldown(phone)
-    await _audit_send(db, phone)
-    await _deliver_otp(phone, otp)
+    phone_number = payload.phone_number
 
-    log.info("otp_sent", phone=_mask(phone), request_id=request_id)
+    sent_recently = await _recent_send_count(phone_number, db)
+    if sent_recently >= settings.otp_rate_limit:
+        minutes = max(1, settings.otp_rate_window_seconds // 60)
+        log.warning("otp_rate_limited", phone=_mask(phone_number), count=sent_recently)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"too many codes requested; try again in {minutes} minutes "
+                f"(limit {settings.otp_rate_limit} per {minutes} minutes)"
+            ),
+        )
+
+    code = generate_otp(settings.otp_length)
+    db.add(
+        OtpCode(
+            phone_number=phone_number,
+            code=code,
+            expires_at=now_utc() + timedelta(seconds=settings.otp_ttl_seconds),
+        )
+    )
+    await db.commit()
+
+    await _register_send(phone_number)
+    await _reset_attempts(phone_number)
+
+    delivered = await send_otp_sms(phone_number, code)
+    log.info(
+        "otp_sent",
+        phone=_mask(phone_number),
+        provider=settings.sms_provider,
+        delivered=delivered,
+        sends_in_window=sent_recently + 1,
+    )
 
     return OtpSendResponse(
-        request_id=request_id,
-        phone=phone,
-        expires_in_seconds=settings.otp_ttl_seconds,
-        resend_after_seconds=RESEND_COOLDOWN_SECONDS,
-        debug_otp=otp if settings.expose_debug_otp else None,
+        success=True,
+        message="OTP sent",
+        demo_otp=code if settings.expose_debug_otp else None,
     )
+
+
+# --- verify -----------------------------------------------------------------
 
 
 @router.post(
     "/otp/verify",
     response_model=TokenResponse,
-    summary="Verify an OTP and receive an access token",
+    summary="Verify an OTP and receive a 30-day JWT",
     responses={
         400: {"description": "Invalid or expired code"},
-        429: {"description": "Too many attempts"},
+        429: {"description": "Too many incorrect attempts"},
         503: {"description": "User store unavailable"},
     },
 )
 async def verify_otp(payload: OtpVerifyRequest, db: DbSession) -> TokenResponse:
-    phone = payload.phone
-    record = await _load_otp(phone)
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="user store unavailable; please retry shortly",
+        )
+
+    phone_number = payload.phone_number
+
+    if await _attempts(phone_number) >= settings.otp_max_attempts:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many incorrect attempts; request a new code",
+        )
+
+    record = (
+        await db.execute(
+            select(OtpCode)
+            .where(
+                OtpCode.phone_number == phone_number,
+                OtpCode.used.is_(False),
+                OtpCode.expires_at > now_utc(),
+            )
+            .order_by(desc(OtpCode.created_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     if record is None:
         raise HTTPException(
@@ -108,190 +161,198 @@ async def verify_otp(payload: OtpVerifyRequest, db: DbSession) -> TokenResponse:
             detail="no active code for this number; request a new one",
         )
 
-    if record.get("attempts", 0) >= settings.otp_max_attempts:
-        await _clear_otp(phone)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="too many incorrect attempts; request a new code",
-        )
+    # compare_digest even on plaintext: the comparison itself must not leak the
+    # code one character at a time through timing.
+    if not hmac.compare_digest(record.code, payload.otp):
+        attempts = await _bump_attempts(phone_number)
+        log.info("otp_verify_failed", phone=_mask(phone_number), attempts=attempts)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="incorrect code")
 
-    if not hmac.compare_digest(record["hash"], _hash_otp(phone, payload.otp)):
-        record["attempts"] = record.get("attempts", 0) + 1
-        await _store_otp(phone, record, keep_ttl=True)
-        log.info("otp_verify_failed", phone=_mask(phone), attempts=record["attempts"])
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="incorrect code"
-        )
+    record.used = True
 
-    await _clear_otp(phone)
-
-    if db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="user store unavailable; please retry shortly",
-        )
-
-    user = (await db.execute(select(User).where(User.phone == phone))).scalar_one_or_none()
-    language = payload.preferred_language or record.get("language") or settings.default_language
-
+    # Upsert the pilgrim.
+    user = (
+        await db.execute(select(User).where(User.phone_number == phone_number))
+    ).scalar_one_or_none()
     if user is None:
         user = User(
-            phone=phone,
-            display_name=payload.display_name,
-            preferred_language=language,
-            last_login_at=now_utc(),
+            phone_number=phone_number,
+            language=settings.default_language,
+            is_verified=True,
         )
         db.add(user)
     else:
-        user.last_login_at = now_utc()
-        if payload.display_name:
-            user.display_name = payload.display_name
-        if payload.preferred_language:
-            user.preferred_language = payload.preferred_language
+        user.is_verified = True
 
-    await _mark_verified(db, phone)
+    await db.flush()
+
+    # A session is created here so the JWT can carry `session_id` — the token
+    # then identifies both the pilgrim and the conversation they are in.
+    sessions = get_session_service(db)
+    state = await sessions.get_or_create(user_id=user.id, language=user.language)
+    await sessions.ensure_row(state)
+
+    await db.commit()
+    await db.refresh(user)
+    await _reset_attempts(phone_number)
+
+    token, expires_in = create_access_token(
+        user_id=user.id, phone_number=user.phone_number, session_id=state.session_id
+    )
+    log.info(
+        "otp_verified",
+        phone=_mask(phone_number),
+        user_id=str(user.id),
+        session_id=str(state.session_id),
+        expires_in_seconds=expires_in,
+    )
+
+    return TokenResponse(success=True, token=token, user=UserOut.model_validate(user))
+
+
+# --- profile ----------------------------------------------------------------
+
+
+@router.get(
+    "/me",
+    response_model=UserProfile,
+    summary="Current user profile",
+    responses={401: {"description": "Missing or invalid bearer token"}},
+)
+async def get_me(user: CurrentUser) -> UserProfile:
+    return UserProfile.model_validate(user)
+
+
+@router.post(
+    "/profile/update",
+    response_model=ProfileUpdateResponse,
+    summary="Update display name and language preference",
+    responses={
+        400: {"description": "Nothing to update"},
+        401: {"description": "Missing or invalid bearer token"},
+    },
+)
+async def update_profile(
+    payload: ProfileUpdateRequest, user: CurrentUser, db: DbSession
+) -> ProfileUpdateResponse:
+    if payload.name is None and payload.language is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provide at least one of: name, language",
+        )
+
+    if payload.name is not None:
+        user.name = payload.name
+    if payload.language is not None:
+        user.language = payload.language
+
     await db.commit()
     await db.refresh(user)
 
-    token, expires_in = create_access_token(user.id, user.phone)
-    log.info("otp_verified", phone=_mask(phone), user_id=str(user.id))
-
-    return TokenResponse(
-        access_token=token,
-        expires_in_seconds=expires_in,
-        user=UserOut.model_validate(user),
+    log.info(
+        "profile_updated",
+        user_id=str(user.id),
+        fields=[f for f in ("name", "language") if getattr(payload, f) is not None],
     )
+    return ProfileUpdateResponse(success=True, user=UserProfile.model_validate(user))
 
 
-# --- OTP storage ------------------------------------------------------------
+# --- rate limiting ----------------------------------------------------------
 
 
-def _hash_otp(phone: str, otp: str) -> str:
+async def _recent_send_count(phone_number: str, db: AsyncSession) -> int:
+    """Codes sent to this number inside the rate window.
+
+    Redis is the fast path. When it is down the count comes from `otp_codes`
+    instead — failing open would turn an unmetered send endpoint into an
+    SMS-bombing tool, and the rows are already there to count.
+    """
+    client = get_redis()
+    if client is not None:
+        try:
+            raw = await client.get(f"{RATE_PREFIX}{phone_number}")
+            return int(raw) if raw else 0
+        except (RedisError, OSError, ValueError) as exc:
+            log.warning("otp_rate_redis_read_failed", error=str(exc))
+
+    window_start = now_utc() - timedelta(seconds=settings.otp_rate_window_seconds)
+    try:
+        return (
+            await db.execute(
+                select(func.count())
+                .select_from(OtpCode)
+                .where(
+                    OtpCode.phone_number == phone_number,
+                    OtpCode.created_at >= window_start,
+                )
+            )
+        ).scalar_one()
+    except Exception as exc:  # noqa: BLE001
+        log.error("otp_rate_db_fallback_failed", error=str(exc))
+        return 0
+
+
+async def _register_send(phone_number: str) -> None:
+    """Increment the window counter, setting its TTL on the first send."""
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        key = f"{RATE_PREFIX}{phone_number}"
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, settings.otp_rate_window_seconds)
+    except (RedisError, OSError) as exc:
+        log.warning("otp_rate_register_failed", error=str(exc))
+
+
+async def _attempts(phone_number: str) -> int:
+    """Failed-attempt count. Throttling degrades to off if Redis is down."""
+    client = get_redis()
+    if client is None:
+        return 0
+    try:
+        raw = await client.get(f"{ATTEMPTS_PREFIX}{phone_number}")
+        return int(raw) if raw else 0
+    except (RedisError, OSError, ValueError):
+        return 0
+
+
+async def _bump_attempts(phone_number: str) -> int:
+    client = get_redis()
+    if client is None:
+        return 0
+    try:
+        key = f"{ATTEMPTS_PREFIX}{phone_number}"
+        count = await client.incr(key)
+        await client.expire(key, settings.otp_ttl_seconds)
+        return int(count)
+    except (RedisError, OSError) as exc:
+        log.warning("otp_attempts_bump_failed", error=str(exc))
+        return 0
+
+
+async def _reset_attempts(phone_number: str) -> None:
+    client = get_redis()
+    if client is None:
+        return
+    try:
+        await client.delete(f"{ATTEMPTS_PREFIX}{phone_number}")
+    except (RedisError, OSError):
+        pass
+
+
+# --- helpers ----------------------------------------------------------------
+
+
+def hash_otp(phone_number: str, code: str) -> str:
+    """Keyed digest of a code. See the module docstring for why this matters."""
     return hmac.new(
-        settings.jwt_secret.encode(), f"{phone}:{otp}".encode(), sha256
+        settings.jwt_secret.encode(), f"{phone_number}:{code}".encode(), sha256
     ).hexdigest()
 
 
-async def _store_otp(phone: str, record: dict[str, Any], keep_ttl: bool = False) -> None:
-    key = f"{OTP_PREFIX}{phone}"
-    client = get_redis()
-    if client is not None:
-        try:
-            # `expires_at` only exists on the in-process fallback records; Redis
-            # owns expiry via the key TTL.
-            payload = {k: v for k, v in record.items() if k != "expires_at"}
-            await client.set(
-                key,
-                json.dumps(payload),
-                ex=None if keep_ttl else settings.otp_ttl_seconds,
-                keepttl=keep_ttl,
-            )
-            return
-        except (RedisError, OSError) as exc:
-            log.warning("otp_redis_write_failed", error=str(exc))
-
-    _memory_otp[key] = {**record, "expires_at": now_utc() + timedelta(
-        seconds=settings.otp_ttl_seconds
-    )}
-
-
-async def _load_otp(phone: str) -> dict[str, Any] | None:
-    key = f"{OTP_PREFIX}{phone}"
-    client = get_redis()
-    if client is not None:
-        try:
-            raw = await client.get(key)
-            return json.loads(raw) if raw else None
-        except (RedisError, OSError, json.JSONDecodeError) as exc:
-            log.warning("otp_redis_read_failed", error=str(exc))
-
-    record = _memory_otp.get(key)
-    if record is None:
-        return None
-    if record["expires_at"] < now_utc():
-        _memory_otp.pop(key, None)
-        return None
-    return record
-
-
-async def _clear_otp(phone: str) -> None:
-    key = f"{OTP_PREFIX}{phone}"
-    _memory_otp.pop(key, None)
-    client = get_redis()
-    if client is not None:
-        try:
-            await client.delete(key)
-        except (RedisError, OSError) as exc:
-            log.warning("otp_redis_delete_failed", error=str(exc))
-
-
-async def _in_cooldown(phone: str) -> bool:
-    client = get_redis()
-    if client is None:
-        return False
-    try:
-        return bool(await client.exists(f"{COOLDOWN_PREFIX}{phone}"))
-    except (RedisError, OSError):
-        return False
-
-
-async def _set_cooldown(phone: str) -> None:
-    client = get_redis()
-    if client is None:
-        return
-    try:
-        await client.set(f"{COOLDOWN_PREFIX}{phone}", "1", ex=RESEND_COOLDOWN_SECONDS)
-    except (RedisError, OSError) as exc:
-        log.warning("otp_cooldown_set_failed", error=str(exc))
-
-
-# --- delivery & audit -------------------------------------------------------
-
-
-async def _deliver_otp(phone: str, otp: str) -> None:
-    """Hand the code to an SMS provider.
-
-    Intentionally a no-op: wire the provider here (MSG91/Gupshup/Twilio) and
-    keep the code out of the logs. `debug_otp` in the response covers local
-    development.
-    """
-    log.info("otp_delivery_stub", phone=_mask(phone), channel="sms")
-
-
-async def _audit_send(db, phone: str) -> None:
-    if db is None:
-        return
-    try:
-        db.add(
-            OtpRequest(
-                phone=phone,
-                channel="sms",
-                expires_at=now_utc() + timedelta(seconds=settings.otp_ttl_seconds),
-            )
-        )
-        await db.commit()
-    except Exception as exc:  # noqa: BLE001 — auditing must not block login
-        await db.rollback()
-        log.warning("otp_audit_failed", error=str(exc))
-
-
-async def _mark_verified(db, phone: str) -> None:
-    if db is None:
-        return
-    try:
-        row = (
-            await db.execute(
-                select(OtpRequest)
-                .where(OtpRequest.phone == phone, OtpRequest.verified_at.is_(None))
-                .order_by(OtpRequest.created_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if row is not None:
-            row.verified_at = now_utc()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("otp_audit_verify_failed", error=str(exc))
-
-
-def _mask(phone: str) -> str:
-    return f"{phone[:3]}****{phone[-3:]}" if len(phone) > 6 else "****"
+def _mask(phone_number: str) -> str:
+    return (
+        f"{phone_number[:3]}****{phone_number[-3:]}" if len(phone_number) > 6 else "****"
+    )

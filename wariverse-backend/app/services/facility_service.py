@@ -1,20 +1,24 @@
-"""Nearby-facility search (water, toilets, medical, food, shelter, …).
+"""Nearby-facility search: water, toilets, medical posts, langars, shelters.
 
 Postgres prefilters candidates with a bounding box on the (lat, lon) index and
 the exact haversine distance is computed in Python — accurate to metres over
-the ~250 km Wari corridor without requiring PostGIS.
+the temple precinct without requiring PostGIS.
+
+Distances and availability are returned as **rendered strings** (`"0.8 km"`,
+`"Open · Volunteer staffed"`) because the frontend prints them verbatim; the
+numeric distance rides along in excluded fields for internal callers.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
 
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.data.i18n import t
 from app.data.reference import FACILITIES, localized_name
 from app.models.db_models import Facility
 from app.models.schemas import FacilityOut
@@ -23,8 +27,22 @@ from app.utils import is_open_now
 
 log = structlog.get_logger(__name__)
 
-# Types a pilgrim should still be routed to even when marked "closed".
+# Types a pilgrim should still be routed to even when marked closed.
 _ALWAYS_RELEVANT = {"medical", "police"}
+
+
+def format_distance(metres: float) -> str:
+    """`0.8 km`, or metres when that would round to `0.0 km`."""
+    if metres < 100:
+        return f"{round(metres)} m"
+    return f"{metres / 1000:.1f} km"
+
+
+def format_availability(row: dict[str, Any], is_open: bool, language: str) -> str:
+    """`Open · Volunteer staffed` — status first, then who runs it."""
+    status = t("facility_open" if is_open else "facility_closed", language)
+    staffing = (row.get("details") or {}).get("staffing")
+    return f"{status} · {staffing}" if staffing else status
 
 
 class FacilityService:
@@ -38,7 +56,7 @@ class FacilityService:
         radius_m: int | None = None,
         facility_types: list[str] | None = None,
         limit: int = 20,
-        language: str = "mr",
+        language: str = "en",
         open_only: bool = False,
         congestion_factor: float = 1.0,
     ) -> list[FacilityOut]:
@@ -51,31 +69,27 @@ class FacilityService:
             if distance > radius:
                 continue
 
-            is_open = is_open_now(row.get("opens_at"), row.get("closes_at"), row.get("is_24x7", False))
+            is_open = is_open_now(
+                row.get("opens_at"), row.get("closes_at"), row.get("is_24x7", False)
+            )
             if open_only and not is_open and row["facility_type"] not in _ALWAYS_RELEVANT:
                 continue
 
             results.append(
                 FacilityOut(
-                    id=row.get("id"),
-                    external_id=row.get("external_id"),
+                    id=row.get("external_id") or str(row.get("id", "")),
+                    category=row["facility_type"],
                     name=localized_name(row, language),
-                    facility_type=row["facility_type"],
-                    lat=row["lat"],
-                    lon=row["lon"],
+                    distance=format_distance(distance),
+                    latitude=row["lat"],
+                    longitude=row["lon"],
+                    availability=format_availability(row, is_open, language),
+                    contact=row.get("contact_phone"),
                     distance_m=int(round(distance)),
                     walk_minutes=walk_minutes(
                         distance, settings.walking_speed_kmph, congestion_factor
                     ),
-                    address=row.get("address"),
-                    contact_phone=row.get("contact_phone"),
                     is_open=is_open,
-                    is_24x7=bool(row.get("is_24x7", False)),
-                    opens_at=row.get("opens_at"),
-                    closes_at=row.get("closes_at"),
-                    capacity=row.get("capacity"),
-                    wheelchair_accessible=bool(row.get("wheelchair_accessible", False)),
-                    details=row.get("details"),
                 )
             )
 
@@ -88,10 +102,11 @@ class FacilityService:
         lon: float,
         facility_types: list[str],
         radius_m: int = 5000,
-        language: str = "mr",
+        language: str = "en",
     ) -> FacilityOut | None:
         found = await self.nearby(
-            lat, lon, radius_m=radius_m, facility_types=facility_types, limit=1, language=language
+            lat, lon, radius_m=radius_m, facility_types=facility_types, limit=1,
+            language=language,
         )
         return found[0] if found else None
 
@@ -155,10 +170,3 @@ class FacilityService:
             "wheelchair_accessible": facility.wheelchair_accessible,
             "details": facility.details,
         }
-
-    async def get_by_id(self, facility_id: UUID) -> Facility | None:
-        if self.db is None:
-            return None
-        return (
-            await self.db.execute(select(Facility).where(Facility.id == facility_id))
-        ).scalar_one_or_none()

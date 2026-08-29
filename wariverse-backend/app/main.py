@@ -23,7 +23,18 @@ from app.models.schemas import (
     ReadinessResponse,
 )
 from app.redis_client import close_redis, init_redis, ping_redis
-from app.routers import auth, conversation, crowd, facilities, lost_found, routes, sos, temple
+from app.routers import (
+    admin,
+    auth,
+    conversation,
+    crowd,
+    facilities,
+    lost_found,
+    routes,
+    sos,
+    temple,
+)
+from app.services import crowd_simulator
 
 log = structlog.get_logger(__name__)
 
@@ -59,16 +70,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if settings.is_production and settings.jwt_secret == "change-me-in-production":
         log.error("insecure_jwt_secret", detail="JWT_SECRET is still the default value")
+    if settings.is_production and not settings.admin_api_key:
+        log.warning(
+            "admin_api_key_unset", detail="admin endpoints will refuse every request"
+        )
+
+    # Stands in for the CCTV feed. Runs per process, so keep it on one worker —
+    # see app/services/crowd_simulator.py.
+    crowd_simulator.start()
 
     log.info(
         "startup_complete",
         database="ok" if db_ok else "degraded",
         redis="ok" if redis_ok else "degraded",
         llm="ok" if settings.llm_configured else "disabled",
+        crowd_simulator="on" if settings.crowd_simulator_enabled else "off",
     )
 
     yield
 
+    await crowd_simulator.stop()
     await close_redis()
     await close_db()
     log.info("shutdown_complete")
@@ -189,5 +210,7 @@ async def readiness() -> ReadinessResponse:
 
 # --- routes -----------------------------------------------------------------
 
-for module in (conversation, crowd, facilities, routes, temple, lost_found, sos, auth):
+for module in (
+    conversation, crowd, facilities, routes, temple, lost_found, sos, auth, admin,
+):
     app.include_router(module.router, prefix=settings.api_prefix)

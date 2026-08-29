@@ -1,9 +1,14 @@
 """Emergency dispatch.
 
 Shared by `POST /api/sos/trigger` and by the confirmation step of the chat flow
-so both paths create identical records and identical wording. An SOS is
-recorded and acknowledged even if Postgres is unavailable — the pilgrim always
-gets the helpline numbers back, and the failure is logged loudly for the
+so both paths create identical records and identical wording.
+
+`sos_events.session_id` is NOT NULL, so a panic press that arrives without a
+session gets an anonymous one created for it — an unregistered pilgrim must
+still be able to call for help.
+
+An SOS is acknowledged even if Postgres is unavailable: the pilgrim always gets
+the helpline numbers back, and the failure is logged at error level for the
 control room to reconcile.
 """
 
@@ -20,13 +25,14 @@ from app.models.db_models import SosEvent
 from app.models.schemas import FacilityOut, GeoPoint, SosEventResponse
 from app.redis_client import get_redis
 from app.services.facility_service import FacilityService
+from app.services.session_service import SessionService
 from app.utils import now_utc
 
 log = structlog.get_logger(__name__)
 
 SOS_CHANNEL = "wv:sos:events"
 
-# Responders move by two-wheeler/ambulance through crowds; slower than road
+# Responders move by two-wheeler/ambulance through crowds: slower than road
 # speed, much faster than a walking pilgrim.
 _RESPONDER_KMPH = 12.0
 _MIN_ETA_MINUTES = 3
@@ -45,6 +51,7 @@ class SosService:
     def __init__(self, db: AsyncSession | None = None) -> None:
         self.db = db
         self.facilities = FacilityService(db)
+        self.sessions = SessionService(db)
 
     async def dispatch(
         self,
@@ -69,21 +76,16 @@ class SosService:
         eta = self._eta_minutes(nearest)
         desk = nearest.name if nearest else settings.wari_control_room
 
+        session_id = await self._resolve_session(session_id, user_id, language)
+
         event = SosEvent(
             id=uuid4(),
-            user_id=user_id,
             session_id=session_id,
-            phone=phone,
-            emergency_type=emergency_type,
-            status="dispatched",
-            lat=lat,
-            lon=lon,
-            accuracy_m=accuracy_m,
-            description=description,
-            language=language,
-            nearest_facility_id=nearest.id if nearest else None,
-            dispatched_to=desk,
-            eta_minutes=eta,
+            user_id=user_id,
+            latitude=lat,
+            longitude=lon,
+            status="ACTIVATED",
+            notes=self._notes(emergency_type, desk, eta, phone, description, accuracy_m),
         )
         created_at = now_utc()
 
@@ -107,6 +109,7 @@ class SosService:
         log.warning(
             "sos_dispatched",
             sos_id=str(event.id),
+            session_id=str(session_id),
             emergency_type=emergency_type,
             lat=lat,
             lon=lon,
@@ -114,19 +117,25 @@ class SosService:
             eta_minutes=eta,
             user_id=str(user_id) if user_id else None,
         )
-        await self._publish(event)
+        await self._publish(event, emergency_type, eta)
 
         return SosEventResponse(
             sos_id=event.id,
-            status="dispatched",
+            session_id=str(session_id),
+            status="ACTIVATED",
             emergency_type=emergency_type,  # type: ignore[arg-type]
             location=GeoPoint(lat=lat, lon=lon, accuracy_m=accuracy_m),
             dispatched_to=desk,
             eta_minutes=eta,
             nearest_facility=nearest,
             helpline_numbers=self.helplines(),
-            message=t("sos_dispatched", language, desk=desk, eta=eta,
-                      helpline=settings.emergency_helpline),
+            message=t(
+                "sos_dispatched",
+                language,
+                desk=desk,
+                eta=eta,
+                helpline=settings.emergency_helpline,
+            ),
             language=language,  # type: ignore[arg-type]
             created_at=created_at,
         )
@@ -136,6 +145,50 @@ class SosService:
         # 112 — national emergency, 108 — ambulance, plus the Wari control room.
         return [settings.emergency_helpline, "108", settings.wari_control_room]
 
+    # --- internals ---------------------------------------------------------
+
+    async def _resolve_session(
+        self, session_id: UUID | None, user_id: UUID | None, language: str
+    ) -> UUID:
+        """Return a session id that satisfies the NOT NULL foreign key.
+
+        Creating one for an anonymous panic press keeps the row valid without
+        making registration a precondition for asking for help.
+        """
+        state = await self.sessions.get_or_create(
+            session_id=session_id, user_id=user_id, language=language
+        )
+        await self.sessions.ensure_row(state)
+        return state.session_id
+
+    @staticmethod
+    def _notes(
+        emergency_type: str,
+        desk: str,
+        eta: int,
+        phone: str | None,
+        description: str | None,
+        accuracy_m: float | None,
+    ) -> str:
+        """Dispatch detail the control room reads back.
+
+        The spec gives `sos_events` a single free-text `notes` column, so the
+        operational fields that used to be columns are folded in here as
+        `key=value` lines rather than dropped.
+        """
+        parts = [
+            f"type={emergency_type}",
+            f"dispatched_to={desk}",
+            f"eta_minutes={eta}",
+        ]
+        if phone:
+            parts.append(f"callback={phone}")
+        if accuracy_m is not None:
+            parts.append(f"gps_accuracy_m={round(accuracy_m)}")
+        if description:
+            parts.append(f"description={description}")
+        return "\n".join(parts)
+
     @staticmethod
     def _eta_minutes(nearest: FacilityOut | None) -> int:
         if nearest is None:
@@ -143,7 +196,7 @@ class SosService:
         minutes = (nearest.distance_m / 1000) / _RESPONDER_KMPH * 60
         return max(_MIN_ETA_MINUTES, round(minutes))
 
-    async def _publish(self, event: SosEvent) -> None:
+    async def _publish(self, event: SosEvent, emergency_type: str, eta: int) -> None:
         """Fan out to the control-room dashboard; best effort by design."""
         client = get_redis()
         if client is None:
@@ -152,8 +205,9 @@ class SosService:
             await client.publish(
                 SOS_CHANNEL,
                 (
-                    f'{{"sos_id":"{event.id}","emergency_type":"{event.emergency_type}",'
-                    f'"lat":{event.lat},"lon":{event.lon},"eta_minutes":{event.eta_minutes}}}'
+                    f'{{"sos_id":"{event.id}","emergency_type":"{emergency_type}",'
+                    f'"latitude":{event.latitude},"longitude":{event.longitude},'
+                    f'"eta_minutes":{eta}}}'
                 ),
             )
         except Exception as exc:  # noqa: BLE001
