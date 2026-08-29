@@ -1,10 +1,14 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
-import React, { useEffect, useId, useRef } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { WebView } from 'react-native-webview';
 import colors from '@/constants/colors';
+import { communityApi, type CommunityServiceItem } from '@/services/api';
 import type { LocationState } from '@/types/domain';
 
 const PANDHARPUR_CENTER = { lat: 17.6778, lng: 75.326 };
+const MY_SEVAS_KEY = 'wariverse-my-sevas';
 
 const ZONES = [
   { name: 'Gate 2', density: 46, lat: 17.679, lng: 75.3245, color: '#6d9b78' },
@@ -18,17 +22,141 @@ const ROUTE_COORDS = [
   [17.6775, 75.3283],
 ];
 
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
+
 export function MapCanvas({
   mode = 'crowd',
   location,
+  destLat,
+  destLng,
+  destName,
+  destPhone,
   onRecenter,
 }: {
   mode?: 'crowd' | 'route';
   location: LocationState;
+  destLat?: number;
+  destLng?: number;
+  destName?: string;
+  destPhone?: string;
   onRecenter?: () => void;
 }) {
   const containerId = useId().replace(/:/g, '_');
   const iframeRef = useRef<any>(null);
+  const webviewRef = useRef<WebView>(null);
+  const [sevas, setSevas] = useState<CommunityServiceItem[]>([]);
+  const [routeCoords, setRouteCoords] = useState<[number, number][] | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    Promise.all([
+      communityApi
+        .list(location.latitude ?? undefined, location.longitude ?? undefined)
+        .then((res) => res.services || [])
+        .catch(() => []),
+      AsyncStorage.getItem(MY_SEVAS_KEY)
+        .then((res) => (res ? (JSON.parse(res) as CommunityServiceItem[]) : []))
+        .catch(() => []),
+    ]).then(([backendSevas, localSevas]) => {
+      if (!isMounted) return;
+      const map = new Map<string, CommunityServiceItem>();
+      [...backendSevas, ...localSevas].forEach((item) => {
+        if (item && item.id && item.isActive !== false) {
+          map.set(item.id, item);
+        }
+      });
+      setSevas(Array.from(map.values()));
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [location.latitude, location.longitude]);
+
+  useEffect(() => {
+    if (!destLat || !destLng || !MAPBOX_TOKEN) {
+      setRouteCoords(null);
+      return;
+    }
+    const userLat = location.latitude || PANDHARPUR_CENTER.lat;
+    const userLng = location.longitude || PANDHARPUR_CENTER.lng;
+
+    const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${userLng},${userLat};${destLng},${destLat}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
+    fetch(url)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.routes && data.routes[0]) {
+          const coords = data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[1], c[0]] as [number, number]);
+          setRouteCoords(coords);
+        } else {
+          setRouteCoords([[userLat, userLng], [destLat, destLng]]);
+        }
+      })
+      .catch(() => {
+        setRouteCoords([[userLat, userLng], [destLat, destLng]]);
+      });
+  }, [location.latitude, location.longitude, destLat, destLng]);
+
+  const sevaMarkersScript = sevas
+    .map(
+      (s) => `
+        L.marker([${s.latitude}, ${s.longitude}], {
+          icon: L.divIcon({
+            className: 'custom-badge-wrap',
+            html: '<div class="custom-badge seva-badge" style="border-color: #0d9488; background: #ccfbf1; color: #0f766e; font-weight: 700;">🚩 SEVA: ${s.title.replace(
+              /'/g,
+              "\\'"
+            )}</div>',
+            iconSize: [120, 24],
+            iconAnchor: [60, 12]
+          })
+        }).addTo(map).bindPopup('<b>🚩 ${s.title.replace(/'/g, "\\'")}</b><br/><b>Provider:</b> ${s.providerName.replace(
+        /'/g,
+        "\\'"
+      )}<br/>📍 ${s.address.replace(/'/g, "\\'")}<br/>📞 Tel: ${s.contactPhone}');
+      `
+    )
+    .join('\n');
+
+  const liveRouteScript = destLat && destLng
+    ? `
+      const destLat = ${destLat};
+      const destLng = ${destLng};
+      const destTitle = "${(destName || 'Destination').replace(/'/g, "\\'")}";
+      const destPhone = "${(destPhone || '').replace(/'/g, "\\'")}";
+      const coords = ${JSON.stringify(routeCoords || [[location.latitude || PANDHARPUR_CENTER.lat, location.longitude || PANDHARPUR_CENTER.lng], [destLat, destLng]])};
+      const routeLine = L.polyline(coords, {
+        color: '#0d9488',
+        weight: 6,
+        opacity: 0.9
+      }).addTo(map);
+
+      const destMarker = L.marker([destLat, destLng], {
+        icon: L.divIcon({
+          className: 'custom-badge-wrap',
+          html: '<div class="custom-badge" style="border-color: #0d9488; background: #0d9488; color: white; font-weight: 700;">📍 ' + destTitle + '</div>',
+          iconSize: [140, 26],
+          iconAnchor: [70, 13]
+        })
+      }).addTo(map).bindPopup('<b>📍 ' + destTitle + '</b>' + (destPhone ? '<br/>📞 Phone: <a href="tel:' + destPhone + '">' + destPhone + '</a>' : ''));
+
+      map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+    `
+    : mode === 'route'
+    ? `
+      if (!locationHasGps) {
+        const routeLine = L.polyline(${JSON.stringify(ROUTE_COORDS)}, {
+          color: '#e06435',
+          weight: 5,
+          opacity: 0.85,
+          dashArray: '8, 8'
+        }).addTo(map);
+        map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
+      } else {
+        map.setView([userLat, userLng], 16);
+      }
+    `
+    : '';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -64,8 +192,11 @@ export function MapCanvas({
     <body>
       <div id="map"></div>
       <script>
-        const map = L.map('map', { zoomControl: false }).setView([${PANDHARPUR_CENTER.lat}, ${PANDHARPUR_CENTER.lng}], 15);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        const userLat = ${location.latitude || PANDHARPUR_CENTER.lat};
+        const userLng = ${location.longitude || PANDHARPUR_CENTER.lng};
+        const locationHasGps = ${location.latitude !== null && location.longitude !== null};
+        const map = L.map('map', { zoomControl: false }).setView([userLat, userLng], 15);
+        L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}@2x?access_token=${MAPBOX_TOKEN}', {
           maxZoom: 19
         }).addTo(map);
 
@@ -81,28 +212,18 @@ export function MapCanvas({
               iconAnchor: [40, 12]
             })
           }).addTo(map).bindPopup('<b>${z.name}</b><br/>Crowd density: ${z.density}%');
-        `,
+        `
               ).join('\n')
             : ''
         }
 
-        ${
-          mode === 'route'
-            ? `
-          const routeLine = L.polyline(${JSON.stringify(ROUTE_COORDS)}, {
-            color: '#e06435',
-            weight: 5,
-            opacity: 0.85,
-            dashArray: '8, 8'
-          }).addTo(map);
-          map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
-        `
-            : ''
-        }
+        /* Render Live Walking Route if Destination active */
+        ${liveRouteScript}
+
+        /* Render Community Seva Offerings */
+        ${sevaMarkersScript}
 
         // User location marker
-        const userLat = ${location.latitude || PANDHARPUR_CENTER.lat};
-        const userLng = ${location.longitude || PANDHARPUR_CENTER.lng};
         L.marker([userLat, userLng], {
           icon: L.divIcon({
             className: 'user-icon',
@@ -124,6 +245,8 @@ export function MapCanvas({
     if (onRecenter) onRecenter();
     if (Platform.OS === 'web' && iframeRef.current?.contentWindow?.recenterMap) {
       iframeRef.current.contentWindow.recenterMap();
+    } else if (webviewRef.current) {
+      webviewRef.current.injectJavaScript('if (window.recenterMap) { window.recenterMap(); } true;');
     }
   };
 
@@ -138,9 +261,14 @@ export function MapCanvas({
           title="Leaflet Wari Map"
         />
       ) : (
-        <View style={styles.fallback}>
-          <Text style={styles.fallbackText}>Leaflet map loading...</Text>
-        </View>
+        <WebView
+          ref={webviewRef}
+          originWhitelist={['*']}
+          source={{ html: htmlContent }}
+          style={styles.iframe as any}
+          javaScriptEnabled={true}
+          domStorageEnabled={true}
+        />
       )}
 
       {location.permission === 'granted' && (

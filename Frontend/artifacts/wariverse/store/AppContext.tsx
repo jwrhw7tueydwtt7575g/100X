@@ -4,6 +4,7 @@ import * as Location from 'expo-location';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import { getCopy } from '@/constants/copy';
+import { authApi, conversationApi, DEFAULT_SESSION_ID } from '@/services/api';
 import { mockConversationApi } from '@/services/mockApi';
 import { speechService, textToSpeechService } from '@/services/speechService';
 import type { ConversationResponse, Language, LocationState, Message, User } from '@/types/domain';
@@ -60,7 +61,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [voiceInput, setVoiceInputState] = useState(true);
   const [isOnboarded, setIsOnboarded] = useState(false);
   const [user, setUser] = useState<User | null>(null);
-  const [location, setLocation] = useState<LocationState>({ latitude: 18.517, longitude: 73.856, permission: 'unknown' });
+  const [location, setLocation] = useState<LocationState>({ latitude: null, longitude: null, permission: 'unknown' });
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -105,6 +106,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user, isReady]);
 
+  useEffect(() => {
+    if (isReady) {
+      void requestLocation();
+    }
+  }, [isReady]);
+
   const setLanguage = useCallback((next: Language) => {
     setLanguageState(next);
     Haptics.selectionAsync().catch(() => undefined);
@@ -120,24 +127,72 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const userMessage: Message = { id: createId('user'), role: 'user', text: text.trim(), timestamp: new Date().toISOString(), language, isVoice };
       setMessages((current) => [...current, userMessage]);
       setIsLoading(true);
+
+      // Attempt to acquire fresh real-time GPS location before sending message
+      let currentLat = location.latitude;
+      let currentLng = location.longitude;
+      if (Platform.OS !== 'web') {
+        try {
+          const perm = await Location.getForegroundPermissionsAsync();
+          if (perm.status === 'granted') {
+            const currentPos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            currentLat = currentPos.coords.latitude;
+            currentLng = currentPos.coords.longitude;
+            setLocation({ latitude: currentLat, longitude: currentLng, permission: 'granted' });
+          }
+        } catch {
+          // Use last known state if position check times out or fails
+        }
+      }
+
       try {
-        const response = await mockConversationApi.sendMessage({ sessionId, language, message: text.trim() });
+        let response: ConversationResponse | null = null;
+        try {
+          response = await conversationApi.sendMessage({
+            sessionId,
+            language,
+            message: text.trim(),
+            isVoice,
+            latitude: currentLat,
+            longitude: currentLng,
+          });
+        } catch (apiErr) {
+          console.warn('Real conversation API failed, falling back to mock:', apiErr);
+        }
+
+        if (!response) {
+          response = await mockConversationApi.sendMessage({
+            sessionId,
+            language,
+            message: text.trim(),
+            latitude: currentLat,
+            longitude: currentLng,
+          });
+        }
+
         const assistantMessage: Message = { id: response.messageId, role: 'assistant', text: response.responseText, timestamp: new Date().toISOString(), language: response.language, widgets: response.widgets };
         setMessages((current) => [...current, assistantMessage]);
-        if (readAloud) await textToSpeechService.speak(response.responseText, language);
+        if (readAloud || isVoice) await textToSpeechService.speak(response.responseText, language);
       } catch {
         setError('Something went wrong. Please try again.');
       } finally {
         setIsLoading(false);
       }
     },
-    [isLoading, language, readAloud]
+    [isLoading, language, readAloud, location]
   );
 
   const confirmSOS = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await mockConversationApi.confirmSOS(language);
+      let response: ConversationResponse;
+      try {
+        response = await conversationApi.confirmSOS(language, DEFAULT_SESSION_ID);
+      } catch {
+        // An emergency must still acknowledge on-screen when the network is
+        // down — the pilgrim also needs to see the helpline number.
+        response = await mockConversationApi.confirmSOS(language);
+      }
       setMessages((current) => [...current, { id: response.messageId, role: 'assistant', text: response.responseText, timestamp: new Date().toISOString(), language, widgets: response.widgets }]);
       return response;
     } catch {
@@ -159,12 +214,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const startRecording = useCallback(async () => {
     if (isRecording || !voiceInput) return;
     setError(null);
-    await speechService.startRecording();
+    await speechService.startRecording(language);
     setIsRecording(true);
     setRecordingSeconds(0);
     timerRef.current = setInterval(() => setRecordingSeconds((seconds) => seconds + 1), 1000);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-  }, [isRecording, voiceInput]);
+  }, [isRecording, voiceInput, language]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
@@ -172,7 +227,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     timerRef.current = null;
     setIsRecording(false);
     const transcript = await speechService.stopRecording(language);
-    await sendMessage(transcript, true);
+    if (transcript && transcript.trim()) {
+      await sendMessage(transcript, true);
+    } else {
+      setError(
+        language === 'mr'
+          ? 'आवाज स्पष्ट ऐकू आला नाही. कृपया पुन्हा बोला किंवा टाईप करा.'
+          : language === 'hi'
+          ? 'आवाज़ साफ़ सुनाई नहीं दी। कृपया फिर से बोलें या टाइप करें।'
+          : 'No clear speech detected. Please speak into the mic or type your question.'
+      );
+    }
   }, [isRecording, language, sendMessage]);
 
   const cancelRecording = useCallback(async () => {
@@ -185,7 +250,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const requestLocation = useCallback(async () => {
     if (Platform.OS === 'web') {
-      setLocation((current) => ({ ...current, permission: 'granted' }));
+      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, permission: 'granted' });
+          },
+          () => {
+            setLocation((current) => ({ ...current, permission: 'denied' }));
+          }
+        );
+      } else {
+        setLocation((current) => ({ ...current, permission: 'granted' }));
+      }
       return;
     }
     const permission = await Location.requestForegroundPermissionsAsync();
@@ -194,7 +270,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       Alert.alert(appCopy.location, appCopy.locationDenied);
       return;
     }
-    const current = await Location.getCurrentPositionAsync({});
+    const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
     setLocation({ latitude: current.coords.latitude, longitude: current.coords.longitude, permission: 'granted' });
   }, [appCopy.location, appCopy.locationDenied]);
 
@@ -213,28 +289,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loginWithPhone = useCallback(async (phoneNumber: string) => {
-    const demoOTP = '123456';
-    return { success: true, otp: demoOTP };
+    try {
+      const res = await authApi.requestOTP(phoneNumber);
+      return { success: true, otp: res.demoOtp || '123456' };
+    } catch {
+      return { success: true, otp: '123456' };
+    }
   }, []);
 
   const verifyOTP = useCallback(async (phoneNumber: string, otp: string) => {
-    if (otp === '123456' || otp.length === 6) {
-      const newUser: User = {
-        id: createId('usr'),
-        phoneNumber,
-        name: `Warkari (${phoneNumber.slice(-4)})`,
-        isAuthenticated: true,
-        createdAt: new Date().toISOString(),
-      };
-      setUser(newUser);
-      return true;
+    try {
+      const res = await authApi.verifyOTP(phoneNumber, otp);
+      if (res.success) {
+        const newUser: User = {
+          id: res.user?.id || createId('usr'),
+          phoneNumber: res.user?.phoneNumber || phoneNumber,
+          name: res.user?.name || `Warkari (${phoneNumber.slice(-4)})`,
+          isAuthenticated: true,
+          token: res.token,
+          createdAt: new Date().toISOString(),
+        };
+        setUser(newUser);
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser)).catch(() => undefined);
+        return true;
+      }
+    } catch {
+      // Fallback local validation when offline or mock mode
+      if (otp === '123456' || otp.length === 6) {
+        const newUser: User = {
+          id: createId('usr'),
+          phoneNumber,
+          name: `Warkari (${phoneNumber.slice(-4)})`,
+          isAuthenticated: true,
+          createdAt: new Date().toISOString(),
+        };
+        setUser(newUser);
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser)).catch(() => undefined);
+        return true;
+      }
     }
     return false;
   }, []);
 
   const logout = useCallback(async () => {
     setUser(null);
-    await AsyncStorage.removeItem(USER_KEY);
+    setMessages([]);
+    await AsyncStorage.multiRemove([USER_KEY, MESSAGES_KEY]).catch(() => undefined);
   }, []);
 
   const value = useMemo<AppContextValue>(

@@ -26,6 +26,12 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerBackTitle: 'Back', headerShown: false }}>
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      {/* Presented as a sheet, the way a phone dialer behaves — the call is a
+          detour from whatever the pilgrim was doing, not a new place. */}
+      <Stack.Screen
+        name="ivr-dialer"
+        options={{ presentation: 'modal', headerShown: false, animation: 'slide_from_bottom' }}
+      />
     </Stack>
   );
 }

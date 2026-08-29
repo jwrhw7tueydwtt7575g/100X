@@ -1,0 +1,85 @@
+1)[ignoring loop detection]
+# TASK: Build Backend IVR State Machine & Audio Engine for WariVerse
+
+## Context & Objective
+We are building a zero-cost, Twilio-free In-App IVR System inside WariVerse. Instead of using external paid telephony APIs like Twilio, the frontend app sends DTMF keypresses ('1', '2', '3', '#') and voice audio streams to our FastAPI backend (`wariverse-backend`), which processes IVR menu logic and streams responses back using OpenAI Speech-to-Text (STT) and Text-to-Speech (TTS).
+
+## Architectural Requirements
+
+### 1. Extend FastAPI Backend Router (`app/routers/ivr.py`)
+- Create new endpoints:
+  - `POST /api/ivr/session/start`: Initializes a new IVR call session with `session_id`, returning initial audio prompt URL/base64 and available DTMF options.
+  - `POST /api/ivr/session/dtmf`: Accepts `{ session_id: str, key: str }` to transition state across IVR menus:
+    - Main Menu: Language Selection (1: Marathi, 2: Hindi, 3: English)
+    - Sub Menu:
+      - Option 1: Live Crowd & Queue Status
+      - Option 2: Temple Darshan & Token Pass Info
+      - Option 3: Nearby Facilities & Seva Offerings
+      - Option 4: Emergency SOS & Volunteer Escalation
+      - Option 9: Switch to Live Speech Conversation Mode
+  - `POST /api/ivr/session/voice`: Accepts recorded speech audio (WAV/AAC/WebM) from the user, uses `VoiceService` with OpenAI Whisper to transcribe, forwards query to `LLMOrchestrator`, and converts LLM response to audio using OpenAI TTS (`tts-1` / `alloy`/`marathi-accent`).
+
+### 2. Implementation & Integration Rules
+- Reuse existing services: `LLMOrchestrator`, `VoiceService`, `CrowdService`, and `TempleService`.
+- Maintain strict session state using `Session` ORM model with `channel="ivr"`.
+- Ensure zero breaking changes to existing REST endpoints (`/api/conversation`, `/api/voice/transcribe`, `/api/voice/speak`).
+
+## Verification & Tests
+- Create pytest test suite in `tests/test_ivr.py` validating:
+  1. Full DTMF menu flow navigation (Start -> Language Select -> Service Selection -> Dynamic Response).
+  2. Voice recording submission and audio response synthesis.
+  3. Proper fallback handling for invalid keypresses ("Press 0 to replay menu").
+
+
+
+
+  2)[ignoring loop detection]
+# TASK: Create Mobile IVR Phone Dialer UI & Live Call Screen Component
+
+## Context & Objective
+Build a native-feeling phone dialer and call screen component inside `Frontend/artifacts/wariverse` using Expo React Native, `expo-av`, and `@expo/vector-icons`.
+
+## Functional Requirements
+
+### 1. New Screen Component (`app/ivr-dialer.tsx` or Modal inside `index.tsx`)
+- **Keypad View**:
+  - Render a sleek phone dialpad with digits 0-9, `*`, `#`, and backspace.
+  - Quick-dial preset cards for WariVerse Helpline numbers:
+    - `1800-WARI-HELP` (General Pilgrimage Assistant)
+    - `1800-233-1000` (Pandharpur Temple Administration)
+    - `112` (Emergency SOS Dispatch)
+  - Green "Call" button to initiate an IVR session.
+
+### 2. Active Call Screen View (`components/IVRActiveCall.tsx`)
+- Display call state UI: Calling, Connected, Call Duration Timer, Speaking indicator.
+- Keypad overlay during call to send DTMF keypresses (`POST /api/ivr/session/dtmf`).
+- Push-to-Talk / Mute button for live voice conversation using `expo-av` audio recording.
+- Speaker toggle, Mute toggle, and Red "End Call" button.
+- Play background audio responses dynamically using `Audio.Sound` from base64/URL returned by backend `/api/ivr/session/*` responses.
+
+## UI/UX & Design Guidelines
+- Modern dark-mode aesthetic with vibrant accent glows (Teal `#0d9488`, Amber `#d97706`, Red `#dc2626`).
+- Include subtle key press haptics (using `expo-haptics` if available).
+- Complete TypeScript typing in `types/domain.ts` for IVR widget states.
+
+3)[ignoring loop detection]
+# TASK: Optimize IVR Audio Caching, OpenAI TTS/STT Pipeline & Seamless Monorepo Integration
+
+## Context & Objective
+Connect the frontend IVR Dialer to the backend IVR Router engine, adding intelligent TTS audio caching and low-latency audio streaming using OpenAI APIs.
+
+## Implementation Details
+
+### 1. TTS Audio Prompt Caching (`app/services/ivr_audio_cache.py`)
+- Pre-generate and cache static IVR menu prompt audio files (e.g. "Welcome to Pandharpur Wari Helpline. Press 1 for Marathi...") in Marathi, Hindi, and English using OpenAI TTS.
+- Hash menu strings to avoid redundant OpenAI API calls for recurring static prompts.
+
+### 2. Frontend Audio Streaming & DTMF Sync (`services/ivrApi.ts`)
+- Implement `ivrApi` client wrapping backend IVR API calls.
+- Queue audio playback sequentially so user hears prompt completion before recording starts.
+- Add automatic reconnection and error handling for poor network conditions during a call.
+
+### 3. Verification & Validation Checklist
+- Run `npx tsc --noEmit` on Frontend to confirm zero TypeScript compilation errors.
+- Run `pytest` on Backend to confirm all IVR endpoints pass integration testing.
+- Validate end-to-end call flow: Dialing -> Language Choice -> Dynamic Facilities/Darshan Query via Voice/DTMF -> Call Teardown.

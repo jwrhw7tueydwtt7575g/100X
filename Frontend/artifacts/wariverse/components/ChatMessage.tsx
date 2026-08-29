@@ -5,9 +5,66 @@ import colors from '@/constants/colors';
 import { ToolWidgetRenderer } from '@/components/WidgetCards';
 import type { Language, Message } from '@/types/domain';
 
-export function ChatMessage({ message, language, onSpeak, onStopSpeaking, onViewMap, onViewRoute, onConfirmSOS, onTalk }: { message: Message; language: Language; onSpeak: (text: string) => void; onStopSpeaking: () => void; onViewMap: () => void; onViewRoute: () => void; onConfirmSOS: () => void; onTalk: () => void }) {
+export function ChatMessage({
+  message,
+  language,
+  locationPermission,
+  onSpeak,
+  onStopSpeaking,
+  onViewMap,
+  onViewRoute,
+  onConfirmSOS,
+  onTalk,
+  onRequestLocation,
+}: {
+  message: Message;
+  language: Language;
+  locationPermission?: string;
+  onSpeak: (text: string) => void;
+  onStopSpeaking: () => void;
+  onViewMap: () => void;
+  onViewRoute: (destLat?: number, destLng?: number, name?: string, phone?: string) => void;
+  onConfirmSOS: () => void;
+  onTalk: () => void;
+  onRequestLocation?: () => void;
+}) {
   const isUser = message.role === 'user';
-  return <View style={[styles.messageWrap, isUser && styles.userWrap]}><View style={[styles.bubble, isUser ? styles.userBubble : styles.assistantBubble]}><Text style={[styles.messageText, isUser && styles.userText]}>{message.text}</Text>{!isUser && message.text && <Pressable accessibilityRole="button" accessibilityLabel="Read assistant message aloud" onPress={() => onSpeak(message.text ?? '')} style={({ pressed }) => [styles.readButton, pressed && { opacity: 0.65 }]}><Feather name="volume-2" size={13} color={colors.light.teal} /><Text style={styles.readText}>Read aloud</Text></Pressable>}{isUser && message.isVoice && <View style={styles.voiceTag}><Feather name="mic" size={11} color={colors.light.white} /><Text style={styles.voiceText}>Voice</Text></View>}</View>{!isUser && message.widgets?.map((widget, index) => <View key={`${message.id}-widget-${index}`} style={styles.widget}><ToolWidgetRenderer widget={widget} language={language} onViewMap={onViewMap} onViewRoute={onViewRoute} onConfirmSOS={onConfirmSOS} onTalk={onTalk} /></View>)}<Text style={[styles.time, isUser && styles.userTime]}>{new Date(message.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</Text></View>;
+  return (
+    <View style={[styles.messageWrap, isUser && styles.userWrap]}>
+      <View style={[styles.bubble, isUser ? styles.userBubble : styles.assistantBubble]}>
+        <Text style={[styles.messageText, isUser && styles.userText]}>{message.text}</Text>
+        {!isUser && message.text && (
+          <Pressable accessibilityRole="button" accessibilityLabel="Read assistant message aloud" onPress={() => onSpeak(message.text ?? '')} style={({ pressed }) => [styles.readButton, pressed && { opacity: 0.65 }]}>
+            <Feather name="volume-2" size={13} color={colors.light.teal} />
+            <Text style={styles.readText}>Read aloud</Text>
+          </Pressable>
+        )}
+        {isUser && message.isVoice && (
+          <View style={styles.voiceTag}>
+            <Feather name="mic" size={11} color={colors.light.white} />
+            <Text style={styles.voiceText}>Voice</Text>
+          </View>
+        )}
+      </View>
+      {!isUser && message.widgets?.map((widget, index) => (
+        <View key={`${message.id}-widget-${index}`} style={styles.widget}>
+          <ToolWidgetRenderer
+            widget={widget}
+            language={language}
+            locationPermission={locationPermission}
+            onViewMap={onViewMap}
+            onViewRoute={onViewRoute}
+            onConfirmSOS={onConfirmSOS}
+            onTalk={onTalk}
+            onRequestLocation={onRequestLocation}
+          />
+        </View>
+      ))}
+      <Text style={[styles.time, isUser && styles.userTime]}>
+        {new Date(message.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+      </Text>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({

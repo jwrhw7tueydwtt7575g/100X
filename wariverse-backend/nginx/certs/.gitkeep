@@ -1,0 +1,2 @@
+# Put fullchain.pem and privkey.pem here, then uncomment the TLS server block
+# in ../nginx.conf. Certificates are deliberately not committed.
