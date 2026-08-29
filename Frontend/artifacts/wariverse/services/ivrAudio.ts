@@ -95,21 +95,21 @@ export async function playBase64(
     }
   }
 
-  if (!isWeb) return;
-
-  try {
-    const audio = new Audio(uri);
-    webAudio = audio;
-    await new Promise<void>((resolve) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => resolve();
-      audio.play().catch(() => resolve());
-    });
-  } catch (error) {
-    console.warn('[ivr] audio playback failed', error);
-  } finally {
-    if (webAudio) {
-      webAudio = null;
+  if (typeof window !== 'undefined' && typeof (window as any).Audio !== 'undefined') {
+    try {
+      const audio = new (window as any).Audio(uri);
+      webAudio = audio;
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        audio.play().catch(() => resolve());
+      });
+    } catch (error) {
+      console.warn('[ivr] audio playback failed', error);
+    } finally {
+      if (webAudio) {
+        webAudio = null;
+      }
     }
   }
 }
