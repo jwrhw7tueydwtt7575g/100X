@@ -410,6 +410,64 @@ class Facility(Base):
     __table_args__ = (Index("ix_facilities_lat_lon", "lat", "lon"),)
 
 
+class CommunityService(Base):
+    """A free offering published by a volunteer or resident along the route.
+
+    Annachatras, rooms, water points and aid posts run by local people. These
+    appear alongside the official facility directory in nearby search and on the
+    map, flagged as seva so a pilgrim can tell who is offering what.
+
+    `owner_token_hash` is what lets the provider take their own listing down.
+    Without it, `DELETE /api/community/services/{id}` would be open to anyone —
+    and the ids are handed out by the list endpoint, so a single sweep could
+    erase every langar from the map. The token is shown once at creation and
+    only its digest is stored.
+    """
+
+    __tablename__ = "community_services"
+
+    id: Mapped[str] = mapped_column(
+        String(24), primary_key=True, default=lambda: f"cs-{uuid.uuid4().hex[:12]}"
+    )
+    provider_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(150), nullable=False)
+    address: Mapped[str] = mapped_column(String(255), nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    available_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    available_until: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    contact_phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true(), index=True
+    )
+    # Set when a signed-in pilgrim publishes; anonymous providers rely on the
+    # token alone.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    owner_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+    __table_args__ = (
+        CheckConstraint(
+            "category in ('food', 'accommodation', 'water', 'medical', 'rest')",
+            name="ck_community_category",
+        ),
+        CheckConstraint(
+            "available_until > available_from", name="ck_community_window"
+        ),
+        # "What is on offer near here, now" — the only hot read.
+        Index("ix_community_active_window", "is_active", "available_until"),
+        Index("ix_community_lat_lon", "latitude", "longitude"),
+    )
+
+
 class RouteWaypoint(Base):
     """An ordered stop on a palkhi route (Alandi/Dehu → Pandharpur)."""
 

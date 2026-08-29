@@ -244,7 +244,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "get_nearby_facility",
             "description": (
                 "Nearest water points, toilets, medical posts, food halls, rest "
-                "areas or accommodation to a coordinate."
+                "areas or accommodation to a coordinate. Results include free "
+                "community seva offerings — annachatras, langars, donated rooms "
+                "— run by local volunteers, marked with is_seva."
             ),
             "parameters": {
                 "type": "object",
@@ -898,6 +900,10 @@ class LLMOrchestrator:
                         "walk_minutes": f.walk_minutes,
                         "open": f.is_open,
                         "contact": f.contact,
+                        # So the model can say "a free langar run by X" rather
+                        # than presenting it as an official facility.
+                        "free_community_seva": f.is_seva,
+                        "run_by": f.provider_name,
                     }
                     for f in found
                 ],
@@ -1231,12 +1237,18 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "गर्दी", "भीड", "भीड़", "रांग", "कतार", "किती वेळ", "कितनी देर", "प्रतीक्षा",
         "crowd", "rush", "queue", "how long", "wait", "waiting time", "gardi", "busy",
     ),
+    # Includes the words pilgrims actually use for community seva — a question
+    # like "Annachatra near me" has to reach facility search, not fall through
+    # to "I didn't quite catch that".
     "facility": (
         "पाणी", "पानी", "शौचालय", "स्वच्छतागृह", "टॉयलेट", "जेवण", "भोजन", "अन्नछत्र",
-        "खाणे", "खाना", "डॉक्टर", "दवाखाना", "औषध", "वैद्यकीय", "चिकित्सा", "निवारा",
-        "मुक्काम", "पोलीस", "पुलिस", "water", "toilet", "washroom", "food", "meal",
-        "doctor", "medical", "hospital", "medicine", "shelter", "rest", "stay",
-        "accommodation", "nearby", "paani",
+        "अन्नदान", "लंगर", "भंडारा", "खाणे", "खाना", "डॉक्टर", "दवाखाना", "औषध",
+        "वैद्यकीय", "चिकित्सा", "निवारा", "मुक्काम", "निवास", "पोलीस", "पुलिस",
+        "मोफत", "मुफ्त", "सेवा",
+        "water", "toilet", "washroom", "food", "meal", "doctor", "medical",
+        "hospital", "medicine", "shelter", "rest", "stay", "accommodation",
+        "nearby", "paani", "annachatra", "annachhatra", "annadan", "langar",
+        "bhandara", "seva", "free food", "free stay", "lodging", "room",
     ),
     "route": (
         "रस्ता", "मार्ग", "कसे जायचे", "कैसे जाएं", "किती दूर", "कितनी दूर", "दिशा",
@@ -1259,8 +1271,17 @@ _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
         "डॉक्टर", "दवाखाना", "औषध", "वैद्यकीय", "चिकित्सा", "प्रथमोपचार",
         "doctor", "medical", "hospital", "medicine", "first aid",
     ),
-    "food": ("जेवण", "भोजन", "अन्नछत्र", "खाणे", "खाना", "भूक", "food", "meal", "prasad"),
-    "accommodation": ("मुक्काम", "रात्री", "तंबू", "accommodation", "stay", "sleep", "night"),
+    # "annachatra" and "langar" are what pilgrims actually say for free food;
+    # "seva" and "free" cover the community offerings specifically.
+    "food": (
+        "जेवण", "भोजन", "अन्नछत्र", "अन्नदान", "खाणे", "खाना", "भूक", "लंगर", "सेवा",
+        "food", "meal", "prasad", "annachatra", "annachhatra", "annadan", "langar",
+        "free food", "seva", "bhandara", "भंडारा",
+    ),
+    "accommodation": (
+        "मुक्काम", "रात्री", "तंबू", "निवास", "राहण्याची", "ठहरने",
+        "accommodation", "stay", "sleep", "night", "lodging", "free stay", "room",
+    ),
     "rest": ("निवारा", "विश्रांती", "आराम", "shelter", "rest", "shade", "sit"),
 }
 

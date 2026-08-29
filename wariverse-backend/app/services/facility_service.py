@@ -32,6 +32,10 @@ log = structlog.get_logger(__name__)
 # Types a pilgrim should still be routed to even when marked closed.
 _ALWAYS_RELEVANT = {"medical", "police"}
 
+# Categories a community member can offer. Police posts and lost & found desks
+# are official-only.
+SEVA_CATEGORIES = ("food", "accommodation", "water", "medical", "rest")
+
 MAPBOX_CATEGORY_MAP = {
     "medical": "hospital,pharmacy,clinic,doctor",
     "police": "police",
@@ -153,8 +157,62 @@ class FacilityService:
                 )
             )
 
+        results.extend(
+            await self._community(lat, lon, radius, facility_types, language)
+        )
         results.sort(key=lambda f: f.distance_m)
         return results[:limit]
+
+    async def _community(
+        self,
+        lat: float,
+        lon: float,
+        radius_m: int,
+        facility_types: list[str] | None,
+        language: str,
+    ) -> list[FacilityOut]:
+        """Live seva offerings, as facilities the caller can treat uniformly.
+
+        Merged here rather than in the router so that every consumer — the
+        `/nearby` endpoint, the LLM's `get_nearby_facility` tool, and SOS
+        responder lookup — sees them without extra wiring.
+        """
+        from app.services.community_service import CommunityServiceRepo
+
+        # Only the six pilgrim-facing categories exist as seva; asking for a
+        # police post should not run this query at all.
+        wanted = [c for c in (facility_types or SEVA_CATEGORIES) if c in SEVA_CATEGORIES]
+        if not wanted:
+            return []
+
+        offerings = await CommunityServiceRepo(self.db).active(
+            lat=lat, lon=lon, radius_m=radius_m, categories=wanted
+        )
+
+        out: list[FacilityOut] = []
+        for offering in offerings:
+            distance = haversine_m(lat, lon, offering.latitude, offering.longitude)
+            out.append(
+                FacilityOut(
+                    id=offering.id,
+                    category=offering.category,  # type: ignore[arg-type]
+                    name=offering.title,
+                    distance=format_distance(distance),
+                    latitude=offering.latitude,
+                    longitude=offering.longitude,
+                    availability=t(
+                        "facility_seva_open", language, provider=offering.provider_name
+                    ),
+                    contact=offering.contact_phone,
+                    is_seva=True,
+                    provider_name=offering.provider_name,
+                    available_until=offering.available_until,
+                    distance_m=int(round(distance)),
+                    walk_minutes=walk_minutes(distance, settings.walking_speed_kmph),
+                    is_open=True,  # `active()` already filtered to the live window
+                )
+            )
+        return out
 
     async def nearest(
         self,

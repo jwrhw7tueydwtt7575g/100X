@@ -26,6 +26,7 @@ from app.redis_client import close_redis, init_redis, ping_redis
 from app.routers import (
     admin,
     auth,
+    community,
     conversation,
     crowd,
     facilities,
@@ -215,6 +216,6 @@ async def readiness() -> ReadinessResponse:
 
 for module in (
     conversation, crowd, facilities, routes, temple, lost_found, sos, auth, admin,
-    ivr, voice,
+    ivr, voice, community,
 ):
     app.include_router(module.router, prefix=settings.api_prefix)

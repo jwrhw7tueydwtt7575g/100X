@@ -38,10 +38,12 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
         "en": "Share your location and I'll show the nearest facilities. Please turn on "
               "location in the app.",
     },
+    # `distance` arrives already formatted with its unit ("0.8 km", "45 m"),
+    # so these must NOT append one — that produced "(0 m m away)".
     "facilities_found": {
-        "mr": "तुमच्या जवळ {count} सुविधा सापडल्या. सर्वात जवळची: {nearest} ({distance} मी).",
-        "hi": "आपके पास {count} सुविधाएँ मिलीं। सबसे नज़दीकी: {nearest} ({distance} मी)।",
-        "en": "Found {count} facilities near you. Nearest: {nearest} ({distance} m away).",
+        "mr": "तुमच्या जवळ {count} सुविधा सापडल्या. सर्वात जवळची: {nearest} ({distance} अंतरावर).",
+        "hi": "आपके पास {count} सुविधाएँ मिलीं। सबसे नज़दीकी: {nearest} ({distance} दूर)।",
+        "en": "Found {count} facilities near you. Nearest: {nearest} ({distance} away).",
     },
     "facilities_none": {
         "mr": "या परिसरात नोंदवलेली सुविधा सापडली नाही. जवळच्या माहिती केंद्रात विचारा.",
@@ -174,6 +176,11 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
         "mr": "अतिशय दाट गर्दी", "hi": "अत्यधिक भीड़", "en": "very high congestion",
     },
     # --- facilities --------------------------------------------------------
+    "facility_seva_open": {
+        "mr": "मोफत सेवा · {provider}",
+        "hi": "नि:शुल्क सेवा · {provider}",
+        "en": "Free seva · {provider}",
+    },
     "facility_open": {"mr": "सुरू", "hi": "खुला", "en": "Open"},
     "facility_closed": {"mr": "बंद", "hi": "बंद", "en": "Closed"},
     "route_congested": {

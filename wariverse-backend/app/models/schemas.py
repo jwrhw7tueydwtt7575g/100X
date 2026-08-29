@@ -418,6 +418,15 @@ class FacilityOut(Schema):
     )
     contact: str | None = None
     phone: str | None = Field(default=None, exclude=True)
+    # True for a community seva offering, so the card and the map can badge it
+    # differently from the official facility directory.
+    is_seva: bool = False
+    provider_name: str | None = Field(
+        default=None, description="Who runs it. Seva offerings only."
+    )
+    available_until: datetime | None = Field(
+        default=None, description="When a seva offering closes. Seva only."
+    )
     # Kept for the orchestrator's tool summaries; not part of the card.
     distance_m: int = Field(exclude=True, default=0)
     walk_minutes: int = Field(exclude=True, default=0)
@@ -426,6 +435,73 @@ class FacilityOut(Schema):
 
 class FacilityNearbyResponse(Schema):
     facilities: list[FacilityOut]
+
+
+# --- community seva ---------------------------------------------------------
+
+SevaCategory = Literal["food", "accommodation", "water", "medical", "rest"]
+
+
+class CommunityServiceCreate(ClientSchema):
+    """A free offering published from the Settings page."""
+
+    provider_name: str = Field(..., min_length=2, max_length=100)
+    category: SevaCategory
+    title: str = Field(..., min_length=3, max_length=150, examples=["Shri Ram Free Annachatra"])
+    address: str = Field(..., min_length=3, max_length=255)
+    latitude: Latitude
+    longitude: Longitude
+    available_from: datetime
+    available_until: datetime
+    contact_phone: str
+
+    @field_validator("contact_phone")
+    @classmethod
+    def _phone(cls, v: str) -> str:
+        return _normalise_phone(v)
+
+    @field_validator("available_until")
+    @classmethod
+    def _window(cls, v: datetime, info) -> datetime:
+        start = info.data.get("available_from")
+        if start and v <= start:
+            raise ValueError("available_until must be after available_from")
+        return v
+
+
+class CommunityServiceOut(Schema):
+    id: str = Field(examples=["cs-9f2c1a4b7d0e"])
+    provider_name: str
+    category: SevaCategory
+    title: str
+    address: str
+    latitude: float
+    longitude: float
+    available_from: datetime
+    available_until: datetime
+    contact_phone: str
+    is_active: bool
+    is_open_now: bool = Field(
+        description="Whether the offering is inside its availability window."
+    )
+    distance_m: int | None = Field(
+        default=None, description="Present only when the query supplied a location."
+    )
+    created_at: datetime
+
+
+class CommunityServiceCreated(CommunityServiceOut):
+    """Creation echoes a manage token — shown once, never retrievable again.
+
+    It is what lets the provider delete their own listing later without an
+    account. The Settings page stores it on the device.
+    """
+
+    manage_token: str
+
+
+class CommunityServiceList(Schema):
+    services: list[CommunityServiceOut]
 
 
 # --- routes -----------------------------------------------------------------
