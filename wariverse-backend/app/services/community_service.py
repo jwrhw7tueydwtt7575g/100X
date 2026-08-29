@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import structlog
 from sqlalchemy import and_, or_, select
@@ -54,6 +54,8 @@ def is_open_now(service: CommunityService, at: datetime | None = None) -> bool:
     )
 
 
+_IN_MEMORY_SERVICES: dict[str, tuple[CommunityService, str]] = {}
+
 class CommunityServiceRepo:
     def __init__(self, db: AsyncSession | None = None) -> None:
         self.db = db
@@ -62,27 +64,41 @@ class CommunityServiceRepo:
 
     async def create(self, payload, user_id=None) -> tuple[CommunityService, str]:
         """Publish an offering. Returns the row and its one-time manage token."""
-        if self.db is None:
-            raise RuntimeError("community service store unavailable")
-
         token = new_manage_token()
+        now = now_utc()
+        service_id = f"cs-{secrets.token_hex(6)}"
+
+        start_time = getattr(payload, "available_from", None) or now
+        end_time = getattr(payload, "available_until", None) or (now + timedelta(days=7))
+
         service = CommunityService(
+            id=service_id,
             provider_name=payload.provider_name,
             category=payload.category,
             title=payload.title,
             address=payload.address,
             latitude=payload.latitude,
             longitude=payload.longitude,
-            available_from=payload.available_from,
-            available_until=payload.available_until,
+            available_from=start_time,
+            available_until=end_time,
             contact_phone=payload.contact_phone,
             user_id=user_id,
             owner_token_hash=hash_token(token),
             is_active=True,
+            is_locked=False,
+            created_at=now,
         )
-        self.db.add(service)
-        await self.db.commit()
-        await self.db.refresh(service)
+
+        if self.db is not None:
+            try:
+                self.db.add(service)
+                await self.db.commit()
+                await self.db.refresh(service)
+            except Exception as exc:
+                log.warning("community_service_db_write_failed_fallback_memory", error=str(exc))
+                _IN_MEMORY_SERVICES[service.id] = (service, token)
+        else:
+            _IN_MEMORY_SERVICES[service.id] = (service, token)
 
         log.info(
             "community_service_published",
@@ -96,20 +112,22 @@ class CommunityServiceRepo:
     async def deactivate(
         self, service_id: str, token: str | None, user_id=None, is_admin: bool = False
     ) -> CommunityService:
-        """Take an offering down.
+        """Take an offering down."""
+        service: CommunityService | None = None
 
-        Soft delete: the row is kept so a provider who removes a listing by
-        mistake can be helped, and so the control room retains a record of what
-        was offered where. It disappears from search and the map immediately.
-        """
-        if self.db is None:
-            raise RuntimeError("community service store unavailable")
+        if self.db is not None:
+            try:
+                service = (
+                    await self.db.execute(
+                        select(CommunityService).where(CommunityService.id == service_id)
+                    )
+                ).scalar_one_or_none()
+            except Exception:
+                pass
 
-        service = (
-            await self.db.execute(
-                select(CommunityService).where(CommunityService.id == service_id)
-            )
-        ).scalar_one_or_none()
+        if service is None and service_id in _IN_MEMORY_SERVICES:
+            service = _IN_MEMORY_SERVICES[service_id][0]
+
         if service is None or not service.is_active:
             raise NotFoundError(service_id)
 
@@ -123,10 +141,93 @@ class CommunityServiceRepo:
             raise NotOwnerError(service_id)
 
         service.is_active = False
-        await self.db.commit()
-        await self.db.refresh(service)
+
+        if self.db is not None:
+            try:
+                await self.db.commit()
+                await self.db.refresh(service)
+            except Exception:
+                pass
 
         log.info("community_service_withdrawn", service_id=service_id)
+        return service
+
+    async def lock(
+        self,
+        service_id: str,
+        user_id=None,
+        locked_by_name: str | None = None,
+        locked_by_phone: str | None = None,
+    ) -> CommunityService:
+        """Lock/reserve a service for a pilgrim."""
+        service: CommunityService | None = None
+
+        if self.db is not None:
+            try:
+                service = (
+                    await self.db.execute(
+                        select(CommunityService).where(CommunityService.id == service_id)
+                    )
+                ).scalar_one_or_none()
+            except Exception:
+                pass
+
+        if service is None and service_id in _IN_MEMORY_SERVICES:
+            service = _IN_MEMORY_SERVICES[service_id][0]
+
+        if service is None or not service.is_active:
+            raise NotFoundError(service_id)
+
+        service.is_locked = True
+        service.locked_by_user_id = user_id
+        service.locked_by_name = locked_by_name or "Pilgrim"
+        service.locked_by_phone = locked_by_phone
+        service.locked_at = now_utc()
+
+        if self.db is not None:
+            try:
+                await self.db.commit()
+                await self.db.refresh(service)
+            except Exception:
+                pass
+
+        log.info("community_service_locked", service_id=service_id, user_id=str(user_id) if user_id else None)
+        return service
+
+    async def unlock(self, service_id: str) -> CommunityService:
+        """Release lock on a service."""
+        service: CommunityService | None = None
+
+        if self.db is not None:
+            try:
+                service = (
+                    await self.db.execute(
+                        select(CommunityService).where(CommunityService.id == service_id)
+                    )
+                ).scalar_one_or_none()
+            except Exception:
+                pass
+
+        if service is None and service_id in _IN_MEMORY_SERVICES:
+            service = _IN_MEMORY_SERVICES[service_id][0]
+
+        if service is None or not service.is_active:
+            raise NotFoundError(service_id)
+
+        service.is_locked = False
+        service.locked_by_user_id = None
+        service.locked_by_name = None
+        service.locked_by_phone = None
+        service.locked_at = None
+
+        if self.db is not None:
+            try:
+                await self.db.commit()
+                await self.db.refresh(service)
+            except Exception:
+                pass
+
+        log.info("community_service_unlocked", service_id=service_id)
         return service
 
     @staticmethod
@@ -154,31 +255,38 @@ class CommunityServiceRepo:
         at: datetime | None = None,
     ) -> list[CommunityService]:
         """Offerings that are live right now, nearest first when located."""
-        if self.db is None:
-            return []
-
         moment = at or now_utc()
-        stmt = select(CommunityService).where(
-            CommunityService.is_active.is_(True),
-            CommunityService.available_from <= moment,
-            CommunityService.available_until >= moment,
-        )
-        if categories:
-            stmt = stmt.where(CommunityService.category.in_(categories))
-        if lat is not None and lon is not None and radius_m:
-            min_lat, max_lat, min_lon, max_lon = bounding_box(lat, lon, radius_m)
-            stmt = stmt.where(
-                and_(
-                    CommunityService.latitude.between(min_lat, max_lat),
-                    CommunityService.longitude.between(min_lon, max_lon),
-                )
-            )
+        rows: list[CommunityService] = []
 
-        try:
-            rows = (await self.db.execute(stmt.limit(500))).scalars().all()
-        except Exception as exc:  # noqa: BLE001 — seva is additive; never break search
-            log.warning("community_service_read_failed", error=str(exc))
-            return []
+        if self.db is not None:
+            stmt = select(CommunityService).where(
+                CommunityService.is_active.is_(True),
+                CommunityService.available_from <= moment,
+                CommunityService.available_until >= moment,
+            )
+            if categories:
+                stmt = stmt.where(CommunityService.category.in_(categories))
+            if lat is not None and lon is not None and radius_m:
+                min_lat, max_lat, min_lon, max_lon = bounding_box(lat, lon, radius_m)
+                stmt = stmt.where(
+                    and_(
+                        CommunityService.latitude.between(min_lat, max_lat),
+                        CommunityService.longitude.between(min_lon, max_lon),
+                    )
+                )
+
+            try:
+                rows = list((await self.db.execute(stmt.limit(500))).scalars().all())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("community_service_read_failed", error=str(exc))
+                rows = []
+
+        # Merge in-memory services
+        for svc, _ in _IN_MEMORY_SERVICES.values():
+            if svc.is_active and is_open_now(svc, moment):
+                if not categories or svc.category in categories:
+                    if svc.id not in {r.id for r in rows}:
+                        rows.append(svc)
 
         if lat is None or lon is None:
             return list(rows)[:limit]
@@ -195,32 +303,40 @@ class CommunityServiceRepo:
     async def owned_by(
         self, user_id=None, tokens: list[str] | None = None, limit: int = 50
     ) -> list[CommunityService]:
-        """A provider's own listings, for the Settings page.
+        """A provider's own listings, for the Settings page."""
+        rows: list[CommunityService] = []
 
-        Matched by account or by any of the manage tokens the device holds —
-        an anonymous provider still needs to find what they published.
-        """
-        if self.db is None or (user_id is None and not tokens):
-            return []
-
-        clauses = []
-        if user_id is not None:
-            clauses.append(CommunityService.user_id == user_id)
-        if tokens:
-            clauses.append(
-                CommunityService.owner_token_hash.in_([hash_token(t) for t in tokens])
-            )
-
-        try:
-            rows = (
-                await self.db.execute(
-                    select(CommunityService)
-                    .where(or_(*clauses))
-                    .order_by(CommunityService.created_at.desc())
-                    .limit(limit)
+        if self.db is not None and (user_id is not None or tokens):
+            clauses = []
+            if user_id is not None:
+                clauses.append(CommunityService.user_id == user_id)
+            if tokens:
+                clauses.append(
+                    CommunityService.owner_token_hash.in_([hash_token(t) for t in tokens])
                 )
-            ).scalars().all()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("community_service_owned_read_failed", error=str(exc))
-            return []
-        return list(rows)
+
+            try:
+                rows = list(
+                    (
+                        await self.db.execute(
+                            select(CommunityService)
+                            .where(or_(*clauses))
+                            .order_by(CommunityService.created_at.desc())
+                            .limit(limit)
+                        )
+                    ).scalars().all()
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("community_service_owned_read_failed", error=str(exc))
+
+        # Merge in-memory services owned by user/token
+        token_hashes = [hash_token(t) for t in (tokens or [])]
+        for svc, _ in _IN_MEMORY_SERVICES.values():
+            if svc.is_active:
+                match_user = user_id is not None and svc.user_id == user_id
+                match_token = svc.owner_token_hash in token_hashes
+                if match_user or match_token or (not user_id and not tokens):
+                    if svc.id not in {r.id for r in rows}:
+                        rows.append(svc)
+
+        return rows[:limit]

@@ -1,8 +1,21 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { ConversationResponse, Language, ToolWidget } from '@/types/domain';
 
-type MessageRequest = { sessionId: string; language: Language; message: string };
+type MessageRequest = { sessionId: string; language: Language; message: string; latitude?: number | null; longitude?: number | null };
 
 const now = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+function calcDistanceStr(lat1: number, lon1: number, lat2: number, lon2: number): string {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const d = R * c;
+  return d < 1 ? `${Math.round(d * 1000)} m` : `${d.toFixed(1)} km`;
+}
 
 const routeWidget: ToolWidget = {
   type: 'route_guidance',
@@ -50,12 +63,27 @@ function facilityWidget(): ToolWidget {
   };
 }
 
-function responseText(language: Language, kind: string): string {
+function responseText(language: Language, kind: string, extra?: { category?: string; name?: string; distance?: string }): string {
   if (kind === 'crowd') {
     return language === 'mr' ? 'गेट ३ वर सध्या जास्त गर्दी आहे. शक्य असल्यास थोडा वेळ थांबा.' : language === 'hi' ? 'गेट 3 पर अभी भीड़ ज़्यादा है। संभव हो तो थोड़ी देर रुकें।' : 'Gate 3 is currently busy. If you can, consider waiting a little while.';
   }
   if (kind === 'facility') {
-    return language === 'mr' ? 'तुमच्या जवळचे मेडिकल सेंटर 800 मीटर अंतरावर आहे.' : language === 'hi' ? 'आपके पास मेडिकल सेंटर 800 मीटर की दूरी पर है।' : 'The nearest medical center is 0.8 km away.';
+    const cat = extra?.category || 'medical';
+    const dist = extra?.distance || '0.3 km';
+    const name = extra?.name || 'facility';
+    if (cat === 'food') {
+      return language === 'mr' ? `तुमच्या जवळ ${name} (${dist} अंतरावर) उपलब्ध आहे.` : language === 'hi' ? `आपके पास ${name} (${dist} दूर) उपलब्ध है।` : `The nearest food & dining option is ${name} (${dist} away).`;
+    }
+    if (cat === 'accommodation') {
+      return language === 'mr' ? `तुमच्या जवळ ${name} (${dist} अंतरावर) राहण्याची सोय आहे.` : language === 'hi' ? `आपके पास ${name} (${dist} दूर) ठहरने की सुविधा है।` : `The nearest stay & accommodation option is ${name} (${dist} away).`;
+    }
+    if (cat === 'water') {
+      return language === 'mr' ? `तुमच्या जवळ ${name} (${dist} अंतरावर) पिण्याचे पाणी उपलब्ध आहे.` : language === 'hi' ? `आपके पास ${name} (${dist} दूर) पीने का पानी उपलब्ध है।` : `The nearest drinking water post is ${name} (${dist} away).`;
+    }
+    if (cat === 'toilet') {
+      return language === 'mr' ? `तुमच्या जवळ ${name} (${dist} अंतरावर) स्वच्छतागृह आहे.` : language === 'hi' ? `आपके पास ${name} (${dist} दूर) शौचालय है।` : `The nearest restroom block is ${name} (${dist} away).`;
+    }
+    return language === 'mr' ? `तुमच्या जवळ ${name} (${dist} अंतरावर) आहे.` : language === 'hi' ? `आपके पास ${name} (${dist} दूर) है।` : `The nearest medical post is ${name} (${dist} away).`;
   }
   if (kind === 'route') {
     return language === 'mr' ? 'मी तुमच्यासाठी कमी गर्दीचा मार्ग दाखवत आहे.' : language === 'hi' ? 'मैं आपके लिए कम भीड़ वाला रास्ता दिखा रहा हूँ।' : 'I found a quieter route to the temple for you.';
@@ -81,26 +109,114 @@ export const mockConversationApi = {
     const query = request.message.toLowerCase();
     let kind = 'normal';
     let widgets: ToolWidget[] = [];
+    let facilityExtra: { category?: string; name?: string; distance?: string } | undefined = undefined;
 
     if (query.includes('crowd') || query.includes('गर्दी') || query.includes('भीड़') || query.includes('gate') || query.includes('gate-')) {
       kind = 'crowd';
       widgets = [crowdWidget()];
     } else if (
       query.includes('hospital') || query.includes('doctor') || query.includes('medical') || query.includes('facility') ||
-      query.includes('toilet') || query.includes('water') || query.includes('food') || query.includes('police') ||
-      query.includes('station') || query.includes('rest') || query.includes('hotel') || query.includes('मेडिकल') ||
-      query.includes('सुविधा') || query.includes('हॉस्पिटल') || query.includes('पोलीस')
+      query.includes('toilet') || query.includes('water') || query.includes('food') || query.includes('restaurant') ||
+      query.includes('police') || query.includes('station') || query.includes('rest') || query.includes('hotel') ||
+      query.includes('stay') || query.includes('lodging') || query.includes('मेडिकल') || query.includes('अन्नछत्र') ||
+      query.includes('जेवण') || query.includes('पाणी') || query.includes('शौचालय') || query.includes('सुविधा') ||
+      query.includes('हॉस्पिटल') || query.includes('पोलीस')
     ) {
       kind = 'facility';
-      const categoryName = query.includes('police') || query.includes('पोलीस') ? 'Police Station / Help Desk' : 'Wari Medical Center';
+      let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' = 'medical';
+      let name = 'Wari Medical Post & First Aid';
+      let distStr = '0.8 km';
+      let lat = request.latitude ?? 17.6778;
+      let lng = request.longitude ?? 75.3283;
+      let phone: string | undefined = undefined;
+
+      if (query.includes('food') || query.includes('restaurant') || query.includes('hotel') || query.includes('dhaba') || query.includes('जेवण') || query.includes('भोजन') || query.includes('अन्नछत्र') || query.includes('खाना') || query.includes('breakfast')) {
+        category = 'food';
+        name = 'Shree Vitthal Free Food Annachatra';
+        distStr = '0.3 km';
+      } else if (query.includes('stay') || query.includes('accommodation') || query.includes('lodging') || query.includes('room') || query.includes('मुक्काम') || query.includes('निवास')) {
+        category = 'accommodation';
+        name = 'Wari Bhakta Niwas & Free Guest Stay';
+        distStr = '0.5 km';
+      } else if (query.includes('water') || query.includes('paani') || query.includes('पाणी') || query.includes('पानी')) {
+        category = 'water';
+        name = 'Pure Drinking Water Seva Post';
+        distStr = '0.1 km';
+      } else if (query.includes('toilet') || query.includes('washroom') || query.includes('restroom') || query.includes('शौचालय') || query.includes('स्वच्छतागृह')) {
+        category = 'toilet';
+        name = 'Public Sanitation & Washroom Block';
+        distStr = '0.4 km';
+      } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस')) {
+        name = 'Wari Police Assistance Desk';
+        distStr = '0.6 km';
+      }
+
+      const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
+      let mapboxFound = false;
+      const userLat = request.latitude ?? 17.6778;
+      const userLng = request.longitude ?? 75.3283;
+
+      if (token) {
+        try {
+          const mapboxCategoryMap: Record<string, string> = {
+            medical: 'hospital',
+            food: 'restaurant',
+            accommodation: 'hotel',
+            water: 'drinking_water',
+            toilet: 'restroom',
+            rest: 'park',
+          };
+          const mbCat = mapboxCategoryMap[category] || 'restaurant';
+          const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(mbCat)}.json?proximity=${userLng},${userLat}&access_token=${token}&country=IN&limit=5`;
+          const res = await fetch(url);
+          const data = await res.json();
+          if (data && data.features && data.features.length > 0) {
+            const first = data.features[0];
+            name = first.text || first.place_name?.split(',')[0] || name;
+            lng = first.center[0];
+            lat = first.center[1];
+            mapboxFound = true;
+            if (first.properties && (first.properties.tel || first.properties.phone)) {
+              phone = first.properties.tel || first.properties.phone;
+            }
+            distStr = calcDistanceStr(userLat, userLng, lat, lng);
+          }
+        } catch {
+          // Fallback gracefully
+        }
+      }
+
+      // Check if user has published custom Sevas in AsyncStorage if mapbox search didn't run or query asks for free/seva
+      if (!mapboxFound || query.includes('free') || query.includes('seva') || query.includes('मोफत') || query.includes('मुफ्त') || query.includes('लंगर')) {
+        try {
+          const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
+          if (storedSevas) {
+            const parsedSevas = JSON.parse(storedSevas) as any[];
+            const matching = parsedSevas.find((s) => s.category === category && s.isActive !== false);
+            if (matching) {
+              name = `${matching.title} (${matching.providerName})`;
+              lat = matching.latitude;
+              lng = matching.longitude;
+              phone = matching.contactPhone;
+              distStr = calcDistanceStr(userLat, userLng, lat, lng);
+            }
+          }
+        } catch {
+          // Fallback to default name
+        }
+      }
+
+      facilityExtra = { category, name, distance: distStr };
+
       widgets = [{
         type: 'nearby_facility',
         data: {
-          category: 'medical',
-          name: categoryName,
-          distance: '0.8 km',
-          latitude: 18.516,
-          longitude: 73.855,
+          category,
+          name,
+          distance: distStr,
+          latitude: lat,
+          longitude: lng,
+          phone,
           availability: 'Open · 24x7 Staffed',
         },
       }];
@@ -154,7 +270,7 @@ export const mockConversationApi = {
       sessionId: request.sessionId,
       messageId: `assistant-${Date.now()}`,
       language: request.language,
-      responseText: responseText(request.language, kind),
+      responseText: responseText(request.language, kind, facilityExtra),
       widgets,
     };
   },

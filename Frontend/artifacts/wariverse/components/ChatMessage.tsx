@@ -23,7 +23,7 @@ export function ChatMessage({
   onSpeak: (text: string) => void;
   onStopSpeaking: () => void;
   onViewMap: () => void;
-  onViewRoute: () => void;
+  onViewRoute: (destLat?: number, destLng?: number, name?: string, phone?: string) => void;
   onConfirmSOS: () => void;
   onTalk: () => void;
   onRequestLocation?: () => void;

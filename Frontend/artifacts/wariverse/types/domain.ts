@@ -5,6 +5,7 @@ export type User = {
   phoneNumber: string;
   name?: string;
   isAuthenticated: boolean;
+  token?: string;
   createdAt: string;
 };
 
@@ -20,7 +21,21 @@ export type ToolWidget =
   | TempleInfoWidget
   | LostFoundWidget
   | SOSWidget
-  | EscalationWidget;
+  | EscalationWidget
+  | PalkhiLocationWidget;
+
+export type PalkhiLocationWidget = {
+  type: 'palkhi_location';
+  data: {
+    latitude: number;
+    longitude: number;
+    currentPlace: string;
+    nextPlace: string;
+    etaMinutes: number;
+    updatedAt: string;
+    isSimulated: boolean;
+  };
+};
 
 export type Message = {
   id: string;
@@ -79,7 +94,8 @@ export type RouteWidget = {
 export type FacilityWidget = {
   type: 'nearby_facility';
   data: {
-    category: 'medical' | 'water' | 'toilet' | 'rest' | 'food' | 'accommodation';
+    id?: string;
+    category: 'medical' | 'water' | 'toilet' | 'rest' | 'food' | 'accommodation' | 'police';
     name: string;
     distance?: string;
     latitude?: number;
@@ -87,6 +103,12 @@ export type FacilityWidget = {
     availability?: string;
     contact?: string;
     phone?: string;
+    isSeva?: boolean;
+    isCharity?: boolean;
+    providerName?: string;
+    isLocked?: boolean;
+    lockedByName?: string;
+    lockedByPhone?: string;
   };
 };
 

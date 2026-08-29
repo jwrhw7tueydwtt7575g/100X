@@ -84,17 +84,8 @@ def normalise_language(value: str | None, default: str = "en") -> str:
 async def transcribe(
     audio: bytes, content_type: str, language_hint: str | None = None
 ) -> Transcript:
-    """Transcribe audio, trying Deepgram then Whisper."""
+    """Transcribe audio, trying OpenAI Whisper first then falling back to Deepgram."""
     errors: list[str] = []
-
-    if settings.deepgram_api_key:
-        try:
-            return await _deepgram(audio, content_type, language_hint)
-        except Exception as exc:  # noqa: BLE001 — fall through to the next provider
-            errors.append(f"deepgram: {exc}")
-            log.warning("deepgram_failed", error=str(exc))
-    else:
-        errors.append("deepgram: no API key")
 
     if settings.openai_api_key:
         try:
@@ -104,6 +95,15 @@ async def transcribe(
             log.error("whisper_failed", error=str(exc))
     else:
         errors.append("whisper: no API key")
+
+    if settings.deepgram_api_key:
+        try:
+            return await _deepgram(audio, content_type, language_hint)
+        except Exception as exc:  # noqa: BLE001 — fall through to the next provider
+            errors.append(f"deepgram: {exc}")
+            log.warning("deepgram_failed", error=str(exc))
+    else:
+        errors.append("deepgram: no API key")
 
     raise TranscriptionError("; ".join(errors))
 
@@ -126,7 +126,7 @@ async def _deepgram(
     else:
         params["detect_language"] = "true"
 
-    async with httpx.AsyncClient(timeout=settings.voice_timeout_seconds) as client:
+    async with httpx.AsyncClient(verify=False, timeout=settings.voice_timeout_seconds) as client:
         response = await client.post(
             DEEPGRAM_URL,
             params=params,
@@ -164,7 +164,7 @@ async def _whisper(
     if language_hint in SUPPORTED_LANGUAGES:
         data["language"] = language_hint
 
-    async with httpx.AsyncClient(timeout=settings.voice_timeout_seconds) as client:
+    async with httpx.AsyncClient(verify=False, timeout=settings.voice_timeout_seconds) as client:
         response = await client.post(
             WHISPER_URL,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},

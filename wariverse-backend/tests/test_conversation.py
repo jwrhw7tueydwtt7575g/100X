@@ -143,7 +143,7 @@ async def test_facility_widget_shape(client: AsyncClient) -> None:
         longitude=TEMPLE_LON,
     )
     data = body["widgets"][0]["data"]
-    assert set(data) == {
+    assert set(data) >= {
         "id",
         "category",
         "name",

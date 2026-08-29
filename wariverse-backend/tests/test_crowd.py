@@ -19,7 +19,7 @@ from app.services.crowd_service import (
 from app.services.crowd_simulator import MAX_STEP, next_density
 from app.utils import IST
 
-ZONES = ["gate-1", "gate-2", "gate-3", "temple-main", "bhima-ghat", "main-road"]
+ZONES = list(ZONES_BY_ID.keys())
 
 CROWD_FIELDS = {
     "zone_id",

@@ -157,4 +157,155 @@ export const conversationApi = {
   },
 };
 
+export type CommunityServiceInput = {
+  providerName: string;
+  category: 'food' | 'accommodation' | 'water' | 'medical' | 'rest';
+  title: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  availableFrom: string;
+  availableUntil: string;
+  contactPhone: string;
+};
+
+export type CommunityServiceItem = {
+  id: string;
+  providerName: string;
+  category: string;
+  title: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  availableFrom: string;
+  availableUntil: string;
+  contactPhone: string;
+  isActive: boolean;
+  isOpenNow: boolean;
+  distanceM?: number | null;
+  isLocked?: boolean;
+  lockedByName?: string | null;
+  lockedByPhone?: string | null;
+  lockedAt?: string | null;
+  createdAt: string;
+  manageToken?: string;
+};
+
+export const authApi = {
+  async requestOTP(phoneNumber: string): Promise<{ success: boolean; message: string; demoOtp?: string }> {
+    const response = await fetch(`${getApiBaseUrl()}/api/auth/otp/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: phoneNumber }),
+    });
+    const payload = await response.json();
+    return {
+      success: response.ok,
+      message: payload.detail || payload.message || 'OTP Sent',
+      demoOtp: payload.demo_otp || payload.demoOtp,
+    };
+  },
+
+  async verifyOTP(phoneNumber: string, otp: string): Promise<{ success: boolean; token?: string; user?: any }> {
+    const response = await fetch(`${getApiBaseUrl()}/api/auth/otp/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: phoneNumber, otp }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.detail || 'OTP verification failed');
+    }
+    const data = camelizeKeys<any>(payload);
+    return { success: true, token: data.token, user: data.user };
+  },
+};
+
+export const communityApi = {
+  async publish(input: CommunityServiceInput): Promise<CommunityServiceItem> {
+    const body = {
+      provider_name: input.providerName,
+      category: input.category,
+      title: input.title,
+      address: input.address,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      available_from: input.availableFrom,
+      available_until: input.availableUntil,
+      contact_phone: input.contactPhone,
+    };
+    return request<CommunityServiceItem>('/api/community/services', body);
+  },
+
+  async list(lat?: number, lng?: number): Promise<{ services: CommunityServiceItem[] }> {
+    const params = new URLSearchParams();
+    if (lat !== undefined && lng !== undefined) {
+      params.append('lat', String(lat));
+      params.append('lng', String(lng));
+    }
+    const response = await fetch(`${getApiBaseUrl()}/api/community/services?${params.toString()}`);
+    const payload = await response.json().catch(() => ({ services: [] }));
+    return camelizeKeys<{ services: CommunityServiceItem[] }>(payload);
+  },
+
+  async withdraw(serviceId: string, manageToken?: string): Promise<void> {
+    const headers: Record<string, string> = {};
+    if (manageToken) {
+      headers['X-Manage-Token'] = manageToken;
+    }
+    await fetch(`${getApiBaseUrl()}/api/community/services/${serviceId}`, {
+      method: 'DELETE',
+      headers,
+    });
+  },
+
+  async lock(serviceId: string, name?: string, phone?: string): Promise<CommunityServiceItem> {
+    const params = new URLSearchParams();
+    if (name) params.append('name', name);
+    if (phone) params.append('phone', phone);
+    const response = await fetch(`${getApiBaseUrl()}/api/community/services/${serviceId}/lock?${params.toString()}`, {
+      method: 'POST',
+    });
+    const payload = await response.json();
+    return camelizeKeys<CommunityServiceItem>(payload);
+  },
+
+  async unlock(serviceId: string): Promise<CommunityServiceItem> {
+    const response = await fetch(`${getApiBaseUrl()}/api/community/services/${serviceId}/unlock`, {
+      method: 'POST',
+    });
+    const payload = await response.json();
+    return camelizeKeys<CommunityServiceItem>(payload);
+  },
+};
+
+export type PalkhiLocation = {
+  latitude: number;
+  longitude: number;
+  currentPlace: string;
+  nextPlace: string;
+  etaMinutes: number;
+  updatedAt: string;
+  isSimulated: boolean;
+};
+
+export const palkhiApi = {
+  async getLiveLocation(): Promise<PalkhiLocation> {
+    const response = await fetch(`${getApiBaseUrl()}/api/palkhi/live`).catch(() => null);
+    if (!response || !response.ok) {
+      return {
+        latitude: 18.5204,
+        longitude: 73.8567,
+        currentPlace: 'Pune (Sangamwadi Halt)',
+        nextPlace: 'Hadapsar Palkhi Sthal',
+        etaMinutes: 25,
+        updatedAt: new Date().toISOString(),
+        isSimulated: true,
+      };
+    }
+    const payload = await response.json().catch(() => null);
+    return camelizeKeys<PalkhiLocation>(payload);
+  },
+};
+
 export type { ToolWidget };

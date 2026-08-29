@@ -21,7 +21,7 @@ export function ToolWidgetRenderer({
   language: Language;
   locationPermission?: string;
   onViewMap?: () => void;
-  onViewRoute?: () => void;
+  onViewRoute?: (destLat?: number, destLng?: number, name?: string, phone?: string) => void;
   onConfirmSOS?: () => void;
   onTalk?: () => void;
   onRequestLocation?: () => void;
@@ -31,6 +31,7 @@ export function ToolWidgetRenderer({
     case 'congestion_forecast': return <ForecastCard data={widget.data} />;
     case 'route_guidance': return <RouteCard data={widget.data} language={language} onViewRoute={onViewRoute} locationPermission={locationPermission} onRequestLocation={onRequestLocation} />;
     case 'nearby_facility': return <FacilityCard data={widget.data} onViewMap={onViewMap} onViewRoute={onViewRoute} locationPermission={locationPermission} onRequestLocation={onRequestLocation} />;
+    case 'palkhi_location': return <PalkhiTrackerCard data={widget.data} onViewMap={onViewMap} />;
     case 'temple_info': return <TempleCard data={widget.data} />;
     case 'lost_and_found': return <LostCard data={widget.data} />;
     case 'sos': return <SOSCard data={widget.data} language={language} onConfirm={onConfirmSOS} />;
@@ -94,21 +95,41 @@ function RouteCard({ data, language, onViewRoute, locationPermission, onRequestL
   );
 }
 
-function FacilityCard({ data, onViewMap, onViewRoute, locationPermission, onRequestLocation }: { data: FacilityWidget['data']; onViewMap?: () => void; onViewRoute?: () => void; locationPermission?: string; onRequestLocation?: () => void }) {
+function FacilityCard({ data, onViewMap, onViewRoute, locationPermission, onRequestLocation }: { data: FacilityWidget['data']; onViewMap?: () => void; onViewRoute?: (destLat?: number, destLng?: number, name?: string, phone?: string) => void; locationPermission?: string; onRequestLocation?: () => void }) {
   const phoneNum = data.phone || data.contact;
+  const isCharity = data.isCharity || data.isSeva;
+  const isLocked = data.isLocked;
   const handleCall = () => {
     if (phoneNum) {
       Linking.openURL(`tel:${phoneNum}`);
     }
   };
+  const handleDirections = () => {
+    if (onViewRoute) {
+      onViewRoute(data.latitude, data.longitude, data.name, phoneNum);
+    } else if (data.latitude && data.longitude) {
+      Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${data.latitude},${data.longitude}&travelmode=walking`);
+    }
+  };
   return (
-    <Shell tone="teal">
+    <Shell tone={isLocked ? 'red' : 'teal'}>
       <CardHeader icon={iconFor[data.category] ?? 'map-pin'} eyebrow={labelFor[data.category] ?? 'Nearby facility'} title={data.name} />
+      {isLocked ? (
+        <View style={{ backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#ef4444', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start', marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Feather name="lock" size={12} color="#dc2626" />
+          <Text style={{ color: '#b91c1c', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🔒 SERVICE LOCKED (RESERVED BY {data.lockedByName ? data.lockedByName.toUpperCase() : 'PILGRIM'})</Text>
+        </View>
+      ) : isCharity ? (
+        <View style={{ backgroundColor: '#ccfbf1', borderWidth: 1, borderColor: '#0d9488', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start', marginBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Feather name="check-circle" size={12} color="#0d9488" />
+          <Text style={{ color: '#0f766e', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🚩 FREE CHARITY / SEVA OFFERING (AVAILABLE)</Text>
+        </View>
+      ) : null}
       <Text style={styles.facilityDistance}>{data.distance ?? 'Distance unavailable'} <Text style={styles.muted}>away</Text></Text>
       {data.availability && (
         <View style={styles.available}>
-          <View style={styles.liveDot} />
-          <Text style={styles.availableText}>{data.availability}</Text>
+          <View style={[styles.liveDot, isLocked ? { backgroundColor: '#ef4444' } : null]} />
+          <Text style={[styles.availableText, isLocked ? { color: '#b91c1c', fontWeight: 'bold' } : null]}>{data.availability}</Text>
         </View>
       )}
       {locationPermission !== 'granted' && (
@@ -125,17 +146,33 @@ function FacilityCard({ data, onViewMap, onViewRoute, locationPermission, onRequ
       )}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
         {phoneNum ? <SmallButton label={phoneNum.length > 5 ? `Call ${phoneNum}` : 'Call'} icon="phone-call" onPress={handleCall} /> : null}
-        {onViewRoute ? (
-          <SmallButton label="Directions" icon="navigation" onPress={onViewRoute} />
-        ) : data.latitude && data.longitude ? (
-          <SmallButton
-            label="Directions"
-            icon="navigation"
-            onPress={() => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${data.latitude},${data.longitude}&travelmode=walking`)}
-          />
-        ) : null}
+        <SmallButton label="Directions" icon="navigation" onPress={handleDirections} />
         {onViewMap ? <SmallButton label="View on map" icon="map" onPress={onViewMap} /> : null}
       </View>
+    </Shell>
+  );
+}
+
+function PalkhiTrackerCard({ data, onViewMap }: { data: any; onViewMap?: () => void }) {
+  return (
+    <Shell tone="teal">
+      <CardHeader icon="navigation" eyebrow="Live Palkhi Procession" title={data.currentPlace || 'Pandharpur Wari'} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <View style={{ backgroundColor: '#0d9488', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 }}>
+          <Text style={{ color: '#ffffff', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🚩 LIVE PALKHI</Text>
+        </View>
+        {data.isSimulated && (
+          <View style={{ backgroundColor: '#fef3c7', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 }}>
+            <Text style={{ color: '#92400e', fontFamily: 'Inter_600SemiBold', fontSize: 10 }}>Simulated position</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.routeMeta}>
+        <View><Text style={styles.metaLabel}>CURRENT STOP</Text><Text style={styles.metaValue}>{data.currentPlace ?? '—'}</Text></View>
+        <View><Text style={styles.metaLabel}>NEXT STOP</Text><Text style={styles.metaValue}>{data.nextPlace ?? '—'}</Text></View>
+        <View><Text style={styles.metaLabel}>ETA</Text><Text style={styles.metaValue}>~{data.etaMinutes ?? '20'} min</Text></View>
+      </View>
+      {onViewMap && <SmallButton label="View on Live Map" icon="map" onPress={onViewMap} />}
     </Shell>
   );
 }

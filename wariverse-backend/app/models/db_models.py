@@ -450,6 +450,16 @@ class CommunityService(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
+    # Service locking by a pilgrim/user
+    is_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false(), index=True
+    )
+    locked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    locked_by_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    locked_by_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     owner_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
@@ -533,3 +543,57 @@ class TempleNotice(Base):
         Boolean, nullable=False, default=True, server_default=true()
     )
     created_at: Mapped[datetime] = _created_at()
+
+
+class CommunityFacility(Base):
+    """Community-registered free service (food, stay, rest point, medical camp)."""
+
+    __tablename__ = "community_facilities"
+
+    id: Mapped[str] = mapped_column(
+        String(24), primary_key=True, default=lambda: f"cf-{uuid.uuid4().hex[:12]}"
+    )
+    category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(20))
+    type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="charity_food", server_default="charity_food"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true(), index=True
+    )
+    added_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class PalkhiRoutePoint(Base):
+    """Ordered waypoints for the Palkhi procession route."""
+
+    __tablename__ = "palkhi_route_points"
+
+    id: Mapped[str] = mapped_column(
+        String(24), primary_key=True, default=lambda: f"prp-{uuid.uuid4().hex[:12]}"
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    place_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    scheduled_time: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
+class PalkhiLivePosition(Base):
+    """Current live location state of the Palkhi."""
+
+    __tablename__ = "palkhi_live_position"
+
+    id: Mapped[str] = mapped_column(String(50), primary_key=True, default="palkhi-current")
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    current_place_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    next_place_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    eta_to_next: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    updated_at: Mapped[datetime] = _updated_at()
+

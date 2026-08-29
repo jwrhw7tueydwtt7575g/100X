@@ -27,6 +27,7 @@ from app.routers import (
     admin,
     auth,
     community,
+    community_facilities,
     conversation,
     crowd,
     facilities,
@@ -216,6 +217,6 @@ async def readiness() -> ReadinessResponse:
 
 for module in (
     conversation, crowd, facilities, routes, temple, lost_found, sos, auth, admin,
-    ivr, voice, community,
+    ivr, voice, community, community_facilities,
 ):
     app.include_router(module.router, prefix=settings.api_prefix)

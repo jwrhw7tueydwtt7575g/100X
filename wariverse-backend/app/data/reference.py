@@ -94,6 +94,58 @@ ZONES: list[dict[str, Any]] = [
         "capacity": 30000,
         "alternate_zone_ids": ["bhima-ghat"],
     },
+    {
+        "zone_id": "mukhdarshan-queue",
+        "name_en": "Mukhdarshan Queue",
+        "name_mr": "मुखदर्शन रांग",
+        "name_hi": "मुखदर्शन पंक्ति",
+        "description_en": "Fast viewing-only queue (15–20 min duration)",
+        "zone_type": "queue",
+        "lat": 17.6782,
+        "lon": 75.3288,
+        "radius_m": 150,
+        "capacity": 15000,
+        "alternate_zone_ids": ["gate-1", "darshan-mandap-token"],
+    },
+    {
+        "zone_id": "darshan-mandap-token",
+        "name_en": "Sant Dnyaneshwar Darshan Mandap",
+        "name_mr": "संत ज्ञानेश्वर दर्शन मंडप",
+        "name_hi": "संत ज्ञानेश्वर दर्शन मंडप",
+        "description_en": "Token verification & time-slot pass entry (North side)",
+        "zone_type": "queue",
+        "lat": 17.6798,
+        "lon": 75.3292,
+        "radius_m": 200,
+        "capacity": 20000,
+        "alternate_zone_ids": ["mukhdarshan-queue", "gate-2"],
+    },
+    {
+        "zone_id": "padsparsha-queue",
+        "name_en": "Padsparsha Darshan Queue",
+        "name_mr": "पदस्पर्श दर्शन रांग",
+        "name_hi": "पदस्पर्श दर्शन पंक्ति",
+        "description_en": "Touch darshan main sanctum queue (2-3 hrs to 24+ hrs peak)",
+        "zone_type": "queue",
+        "lat": 17.6773,
+        "lon": 75.3312,
+        "radius_m": 300,
+        "capacity": 35000,
+        "alternate_zone_ids": ["mukhdarshan-queue"],
+    },
+    {
+        "zone_id": "chandrabhaga-riverbank",
+        "name_en": "Chandrabhaga Riverbank",
+        "name_mr": "चंद्रभागा नदी काठ",
+        "name_hi": "चंद्रभागा नदी तट",
+        "description_en": "Holy dip & riverbank gathering point",
+        "zone_type": "ghat",
+        "lat": 17.6815,
+        "lon": 75.3258,
+        "radius_m": 500,
+        "capacity": 50000,
+        "alternate_zone_ids": ["bhima-ghat"],
+    },
 ]
 
 ZONES_BY_ID: dict[str, dict[str, Any]] = {z["zone_id"]: z for z in ZONES}
@@ -330,7 +382,7 @@ FACILITIES: list[dict[str, Any]] = [
 # no overnight accommodation, so it returns an empty list rather than inventing
 # places for pilgrims to sleep.
 FACILITY_CATEGORIES: tuple[str, ...] = (
-    "medical", "water", "toilet", "rest", "food", "accommodation",
+    "medical", "water", "toilet", "rest", "food", "accommodation", "police",
 )
 
 

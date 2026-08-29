@@ -36,13 +36,13 @@ _ALWAYS_RELEVANT = {"medical", "police"}
 # are official-only.
 SEVA_CATEGORIES = ("food", "accommodation", "water", "medical", "rest")
 
-MAPBOX_CATEGORY_MAP = {
-    "medical": "hospital,pharmacy,clinic,doctor",
-    "police": "police",
-    "food": "restaurant,food,fast_food",
-    "accommodation": "lodging,hotel",
-    "toilet": "restroom,public_toilet",
-    "water": "drinking_water",
+MAPBOX_CATEGORY_MAP: dict[str, list[str]] = {
+    "medical": ["hospital", "pharmacy", "clinic", "doctor"],
+    "police": ["police"],
+    "food": ["restaurant", "food", "fast_food", "cafe"],
+    "accommodation": ["hotel", "lodging", "guest_house"],
+    "toilet": ["restroom", "public_toilet"],
+    "water": ["drinking_water"],
 }
 
 
@@ -192,26 +192,72 @@ class FacilityService:
         out: list[FacilityOut] = []
         for offering in offerings:
             distance = haversine_m(lat, lon, offering.latitude, offering.longitude)
+            status_text = (
+                f"Locked (Reserved by {offering.locked_by_name or 'Pilgrim'})"
+                if offering.is_locked
+                else t("facility_seva_open", language, provider=offering.provider_name)
+            )
             out.append(
                 FacilityOut(
                     id=offering.id,
                     category=offering.category,  # type: ignore[arg-type]
                     name=offering.title,
-                    distance=format_distance(distance),
+                    distance=format_distance(distance, lat, lon, offering.latitude, offering.longitude),
                     latitude=offering.latitude,
                     longitude=offering.longitude,
-                    availability=t(
-                        "facility_seva_open", language, provider=offering.provider_name
-                    ),
+                    availability=status_text,
                     contact=offering.contact_phone,
+                    phone=offering.contact_phone,
                     is_seva=True,
+                    is_charity=True,
                     provider_name=offering.provider_name,
                     available_until=offering.available_until,
+                    is_locked=offering.is_locked,
+                    locked_by_name=offering.locked_by_name,
+                    locked_by_phone=offering.locked_by_phone,
+                    locked_at=offering.locked_at,
                     distance_m=int(round(distance)),
                     walk_minutes=walk_minutes(distance, settings.walking_speed_kmph),
-                    is_open=True,  # `active()` already filtered to the live window
+                    is_open=not offering.is_locked,
                 )
             )
+
+        if self.db is not None:
+            try:
+                from app.models.db_models import CommunityFacility
+                min_lat, max_lat, min_lon, max_lon = bounding_box(lat, lon, radius_m)
+                stmt = select(CommunityFacility).where(
+                    CommunityFacility.is_active.is_(True),
+                    CommunityFacility.category.in_(wanted),
+                    CommunityFacility.lat.between(min_lat, max_lat),
+                    CommunityFacility.lon.between(min_lon, max_lon),
+                )
+                c_facs = (await self.db.execute(stmt)).scalars().all()
+                for cf in c_facs:
+                    dist = haversine_m(lat, lon, cf.lat, cf.lon)
+                    if dist <= radius_m:
+                        out.append(
+                            FacilityOut(
+                                id=cf.id,
+                                category=cf.category,  # type: ignore[arg-type]
+                                name=cf.name,
+                                distance=format_distance(dist, lat, lon, cf.lat, cf.lon),
+                                latitude=cf.lat,
+                                longitude=cf.lon,
+                                availability="Open · Free Community Facility",
+                                contact=cf.phone,
+                                phone=cf.phone,
+                                is_seva=True,
+                                is_charity=cf.type in ("charity_food", "charity_stay"),
+                                provider_name=cf.added_by or "Volunteer Trust",
+                                distance_m=int(round(dist)),
+                                walk_minutes=walk_minutes(dist, settings.walking_speed_kmph),
+                                is_open=True,
+                            )
+                        )
+            except Exception as exc:
+                log.warning("community_facilities_fetch_failed", error=str(exc))
+
         return out
 
     async def nearest(
@@ -241,7 +287,7 @@ class FacilityService:
             log.warning("mapbox_facility_rate_limited")
             return []
 
-        categories_to_query = []
+        categories_to_query: list[tuple[str, list[str]]] = []
         if facility_types:
             for ft in facility_types:
                 if ft in MAPBOX_CATEGORY_MAP:
@@ -252,50 +298,54 @@ class FacilityService:
         if not categories_to_query:
             return []
 
-        results = []
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            for category_type, mapbox_cat in categories_to_query:
-                cat_results = []
-                try:
-                    # 1. Primary: Category Search Box API
-                    url = f"https://api.mapbox.com/search/searchbox/v1/category/{mapbox_cat}"
-                    params = {
-                        "access_token": token,
-                        "proximity": f"{lon},{lat}",
-                        "radius": 10000,
-                        "limit": 5,
-                    }
-                    resp = await client.get(url, params=params)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        for feat in data.get("features", []):
-                            props = feat.get("properties", {})
-                            geom = feat.get("geometry", {})
-                            coords = geom.get("coordinates", [lon, lat])
-                            f_lon, f_lat = coords[0], coords[1]
-                            meta = props.get("metadata") or {}
-                            phone = meta.get("phone") or meta.get("telephone") or props.get("phone") or props.get("telephone")
-                            mb_id = props.get("mapbox_id") or props.get("id") or len(results)
-                            cat_results.append(
-                                {
-                                    "id": f"fac-mb-{mb_id}",
-                                    "external_id": f"fac-mb-{mb_id}",
-                                    "name": props.get("name") or "Nearby Facility",
-                                    "name_en": props.get("name") or "Nearby Facility",
-                                    "facility_type": category_type,
-                                    "lat": f_lat,
-                                    "lon": f_lon,
-                                    "address": props.get("full_address") or props.get("address"),
-                                    "contact_phone": phone,
-                                    "phone": phone,
-                                    "is_24x7": True,
-                                    "is_operational": True,
-                                    "details": {"staffing": "Mapbox Verified POI"},
-                                }
-                            )
+        results: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(verify=False, timeout=6.0) as client:
+            for category_type, sub_categories in categories_to_query:
+                cat_results: list[dict[str, Any]] = []
+                for sub_cat in sub_categories:
+                    try:
+                        # 1. Primary: Category Search Box API
+                        url = f"https://api.mapbox.com/search/searchbox/v1/category/{sub_cat}"
+                        params = {
+                            "access_token": token,
+                            "proximity": f"{lon},{lat}",
+                            "radius": 10000,
+                            "limit": 5,
+                        }
+                        resp = await client.get(url, params=params)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            for feat in data.get("features", []):
+                                props = feat.get("properties", {})
+                                geom = feat.get("geometry", {})
+                                coords = geom.get("coordinates", [lon, lat])
+                                f_lon, f_lat = coords[0], coords[1]
+                                meta = props.get("metadata") or {}
+                                phone = meta.get("phone") or meta.get("telephone") or props.get("phone") or props.get("telephone")
+                                mb_id = props.get("mapbox_id") or props.get("id") or len(results)
+                                cat_results.append(
+                                    {
+                                        "id": f"fac-mb-{mb_id}",
+                                        "external_id": f"fac-mb-{mb_id}",
+                                        "name": props.get("name") or "Nearby Facility",
+                                        "name_en": props.get("name") or "Nearby Facility",
+                                        "facility_type": category_type,
+                                        "lat": f_lat,
+                                        "lon": f_lon,
+                                        "address": props.get("full_address") or props.get("address"),
+                                        "contact_phone": phone,
+                                        "phone": phone,
+                                        "is_24x7": True,
+                                        "is_operational": True,
+                                        "details": {"staffing": "Mapbox Verified POI"},
+                                    }
+                                )
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("mapbox_fetch_error", category=category_type, sub_cat=sub_cat, error=str(exc))
 
-                    # 2. Fallback: Forward Search API if Category search yields 0 POIs
-                    if not cat_results:
+                # 2. Fallback: Forward Search API if Category search yields 0 POIs
+                if not cat_results:
+                    try:
                         f_url = "https://api.mapbox.com/search/searchbox/v1/forward"
                         f_params = {
                             "q": category_type,
@@ -331,9 +381,10 @@ class FacilityService:
                                         "details": {"staffing": "Mapbox Verified POI"},
                                     }
                                 )
-                    results.extend(cat_results)
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("mapbox_fetch_error", category=category_type, error=str(exc))
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("mapbox_forward_search_error", category=category_type, error=str(exc))
+
+                results.extend(cat_results)
 
         return results
 

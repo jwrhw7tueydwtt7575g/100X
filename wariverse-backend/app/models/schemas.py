@@ -7,7 +7,7 @@ JSON contract the mobile client sees is snake_case end to end.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -18,6 +18,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 # --- shared types -----------------------------------------------------------
@@ -417,16 +418,21 @@ class FacilityOut(Schema):
         examples=["Open · Volunteer staffed"],
     )
     contact: str | None = None
-    phone: str | None = Field(default=None, exclude=True)
+    phone: str | None = None
     # True for a community seva offering, so the card and the map can badge it
     # differently from the official facility directory.
     is_seva: bool = False
+    is_charity: bool = False
     provider_name: str | None = Field(
         default=None, description="Who runs it. Seva offerings only."
     )
     available_until: datetime | None = Field(
         default=None, description="When a seva offering closes. Seva only."
     )
+    is_locked: bool = False
+    locked_by_name: str | None = None
+    locked_by_phone: str | None = None
+    locked_at: datetime | None = None
     # Kept for the orchestrator's tool summaries; not part of the card.
     distance_m: int = Field(exclude=True, default=0)
     walk_minutes: int = Field(exclude=True, default=0)
@@ -451,9 +457,22 @@ class CommunityServiceCreate(ClientSchema):
     address: str = Field(..., min_length=3, max_length=255)
     latitude: Latitude
     longitude: Longitude
-    available_from: datetime
-    available_until: datetime
+    available_from: datetime | None = None
+    available_until: datetime | None = None
     contact_phone: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_dates(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            now = datetime.now(timezone.utc)
+            has_from = "available_from" in data or "availableFrom" in data
+            has_until = "available_until" in data or "availableUntil" in data
+            if not has_from:
+                data["available_from"] = now
+            if not has_until:
+                data["available_until"] = now + timedelta(days=7)
+        return data
 
     @field_validator("contact_phone")
     @classmethod
@@ -462,9 +481,9 @@ class CommunityServiceCreate(ClientSchema):
 
     @field_validator("available_until")
     @classmethod
-    def _window(cls, v: datetime, info) -> datetime:
+    def _window(cls, v: datetime | None, info) -> datetime | None:
         start = info.data.get("available_from")
-        if start and v <= start:
+        if start and v and v <= start:
             raise ValueError("available_until must be after available_from")
         return v
 
@@ -487,6 +506,10 @@ class CommunityServiceOut(Schema):
     distance_m: int | None = Field(
         default=None, description="Present only when the query supplied a location."
     )
+    is_locked: bool = False
+    locked_by_name: str | None = None
+    locked_by_phone: str | None = None
+    locked_at: datetime | None = None
     created_at: datetime
 
 
