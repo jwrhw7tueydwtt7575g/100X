@@ -14,7 +14,7 @@ import base64
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
@@ -121,6 +121,52 @@ async def transcribe(
     )
 
 
+@router.get(
+    "/speak",
+    summary="Read text aloud (GET endpoint for audio elements)",
+    response_class=StreamingResponse,
+)
+async def speak_get(
+    text: Annotated[str, Query(description="Text to read")],
+    language: Annotated[str, Query(description="en | hi | mr")] = "en",
+):
+    clean_text = text.strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    if not tts.is_configured(language) and tts.openai_configured():
+        async def stream_openai():
+            try:
+                async for chunk in tts.synthesize_openai(clean_text, language):
+                    yield chunk
+            except tts.SynthesisError as exc:
+                log.error("tts_openai_stream_failed", language=language, error=str(exc))
+
+        return StreamingResponse(stream_openai(), media_type=tts.MEDIA_TYPE)
+
+    if not tts.is_configured(language):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"no speech provider configured for {language}",
+        )
+
+    async def stream():
+        try:
+            async for chunk in tts.synthesize(clean_text, language):
+                yield chunk
+        except tts.SynthesisError as exc:
+            log.error("tts_stream_failed", language=language, error=str(exc))
+
+    return StreamingResponse(
+        stream(),
+        media_type=tts.MEDIA_TYPE,
+        headers={
+            "Cache-Control": f"private, max-age={settings.tts_cache_ttl_seconds}",
+            "X-TTS-Provider": tts.provider_for(language),
+        },
+    )
+
+
 @router.post(
     "/speak",
     summary="Read text aloud",
@@ -141,6 +187,27 @@ async def speak(payload: SpeakRequest):
                 f"{settings.tts_max_characters}"
             ),
         )
+    if not tts.is_configured(payload.language) and tts.openai_configured():
+        if payload.encoding == "base64":
+            try:
+                audio = await tts.synthesize_openai_bytes(text, payload.language)
+            except tts.SynthesisError as exc:
+                raise _unavailable(exc) from exc
+            return JSONResponse(
+                content=SpeakBase64Response(
+                    audio_base64=base64.b64encode(audio).decode("ascii"),
+                    language=payload.language,
+                    cached=False,
+                ).model_dump(mode="json")
+            )
+        async def stream_openai():
+            try:
+                async for chunk in tts.synthesize_openai(text, payload.language):
+                    yield chunk
+            except tts.SynthesisError as exc:
+                log.error("tts_openai_stream_failed", language=payload.language, error=str(exc))
+        return StreamingResponse(stream_openai(), media_type=tts.MEDIA_TYPE)
+
     if not tts.is_configured(payload.language):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
