@@ -286,7 +286,7 @@ async def test_ivr_asks_the_model_for_a_shorter_reply(with_llm) -> None:
 # --- tool schemas -----------------------------------------------------------
 
 
-def test_all_eight_tools_are_exposed() -> None:
+def test_all_nine_tools_are_exposed() -> None:
     names = {schema["function"]["name"] for schema in TOOL_SCHEMAS}
     assert names == {
         "get_crowd_density",
@@ -296,6 +296,7 @@ def test_all_eight_tools_are_exposed() -> None:
         "get_temple_info",
         "report_lost_found",
         "trigger_sos",
+        "get_palkhi_location",
         "escalate_to_human",
     }
 

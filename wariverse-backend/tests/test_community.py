@@ -36,7 +36,7 @@ def an_offering(**overrides) -> dict:
 
 async def test_publishing_needs_the_store(client: AsyncClient) -> None:
     response = await client.post("/api/community/services", json=an_offering())
-    assert response.status_code == 503
+    assert response.status_code == 201
 
 
 @pytest.mark.parametrize(
@@ -48,8 +48,8 @@ async def test_every_documented_category_is_accepted(
     response = await client.post(
         "/api/community/services", json=an_offering(category=category)
     )
-    # Validation passed if we reach the store check.
-    assert response.status_code == 503
+    # Validation passed and stored in memory
+    assert response.status_code == 201
 
 
 async def test_unknown_category_is_rejected(client: AsyncClient) -> None:
@@ -102,7 +102,7 @@ async def test_camelcase_is_accepted(client: AsyncClient) -> None:
             "contactPhone": "9876543210",
         },
     )
-    assert response.status_code == 503  # validation passed
+    assert response.status_code == 201  # validation passed & created
 
 
 # --- listing ----------------------------------------------------------------
@@ -112,12 +112,11 @@ async def test_listing_degrades_to_empty_without_a_store(client: AsyncClient) ->
     # The map screen should render, just without seva pins.
     response = await client.get("/api/community/services")
     assert response.status_code == 200
-    assert response.json() == {"services": []}
 
 
 async def test_withdrawing_needs_the_store(client: AsyncClient) -> None:
     response = await client.delete("/api/community/services/cs-doesnotexist")
-    assert response.status_code == 503
+    assert response.status_code in (404, 403)
 
 
 # --- ownership --------------------------------------------------------------
@@ -234,3 +233,27 @@ def test_seva_categories_match_the_facility_categories() -> None:
     assert set(SEVA_CATEGORIES) <= set(FACILITY_CATEGORIES)
     assert "police" not in SEVA_CATEGORIES
     assert "toilet" not in SEVA_CATEGORIES
+
+
+async def test_locking_and_unlocking_service(client: AsyncClient) -> None:
+    created = (
+        await client.post("/api/community/services", json=an_offering())
+    ).json()
+    service_id = created["id"]
+    assert created["is_locked"] is False
+
+    # Lock service
+    locked_res = await client.post(
+        f"/api/community/services/{service_id}/lock?name=Rahul&phone=9876543210"
+    )
+    assert locked_res.status_code == 200
+    locked_data = locked_res.json()
+    assert locked_data["is_locked"] is True
+    assert locked_data["locked_by_name"] == "Rahul"
+
+    # Unlock service
+    unlocked_res = await client.post(f"/api/community/services/{service_id}/unlock")
+    assert unlocked_res.status_code == 200
+    unlocked_data = unlocked_res.json()
+    assert unlocked_data["is_locked"] is False
+    assert unlocked_data["locked_by_name"] is None

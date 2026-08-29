@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str | None = None
     # "Aria" — verify against your account's voice list before launch; voice
     # ids are per-account for cloned voices and global for stock ones.
-    elevenlabs_voice_id: str = "9BWtsMINqrJLrRacOk9x"
+    elevenlabs_voice_id: str = "EXAVITQu4vr4xnSDxMaL"
     elevenlabs_model: str = "eleven_multilingual_v2"
     # Marathi: ElevenLabs handles it poorly, so it goes to Google WaveNet.
     # Either a service-account JSON path or a plain API key works.

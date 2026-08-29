@@ -17,12 +17,91 @@ function useSafeTabBarHeight() {
 }
 
 export default function MapScreen() {
-  const { focus } = useLocalSearchParams<{ focus?: string }>();
+  const { focus, destLat, destLng, destName, phone } = useLocalSearchParams<{
+    focus?: string;
+    destLat?: string;
+    destLng?: string;
+    destName?: string;
+    phone?: string;
+  }>();
   const { copy, location, requestLocation } = useApp();
   const insets = useSafeAreaInsets();
   const tabBarHeight = useSafeTabBarHeight();
-  const routeMode = focus === 'route';
-  return <View style={[styles.screen, { paddingTop: insets.top + 15, paddingBottom: tabBarHeight + 12 }]}><View style={styles.header}><View><Text style={styles.kicker}>{copy.liveMap.toUpperCase()}</Text><Text style={styles.title}>{routeMode ? copy.route : copy.crowd}</Text></View><View style={styles.livePill}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View></View><View style={styles.mapWrap}><MapCanvas mode={routeMode ? 'route' : 'crowd'} location={location} onRecenter={() => void requestLocation()} /></View>{location.permission !== 'granted' && <Pressable accessibilityRole="button" onPress={() => void requestLocation()} style={({ pressed }) => [styles.locationPrompt, pressed && { opacity: 0.7 }]}><View style={styles.locationIcon}><Feather name="map-pin" size={17} color={colors.light.teal} /></View><View style={styles.locationCopy}><Text style={styles.locationTitle}>{copy.location}</Text><Text style={styles.locationDescription}>{copy.allowLocation}</Text></View><Feather name="arrow-right" size={17} color={colors.light.teal} /></Pressable>}{routeMode ? <View style={styles.legend}><View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: colors.light.teal }]} /><Text style={styles.legendText}>Start</Text></View><View style={styles.legendRow}><View style={[styles.legendLine, { backgroundColor: colors.light.primary }]} /><Text style={styles.legendText}>Recommended route</Text></View><View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: colors.light.primary }]} /><Text style={styles.legendText}>Temple</Text></View></View> : <View style={styles.legend}><Text style={styles.legendHeading}>Crowd right now</Text><View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: '#6d9b78' }]} /><Text style={styles.legendText}>Low</Text></View><View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: '#d59e2e' }]} /><Text style={styles.legendText}>Moderate</Text></View><View style={styles.legendRow}><View style={[styles.legendDot, { backgroundColor: colors.light.primary }]} /><Text style={styles.legendText}>High</Text></View></View>}<Text style={styles.disclaimer}>Demo map showing backend-provided zones · updated 2 min ago</Text></View>;
+  const routeMode = focus === 'route' || Boolean(destLat && destLng);
+  return (
+    <View style={[styles.screen, { paddingTop: insets.top + 15, paddingBottom: tabBarHeight + 12 }]}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.kicker}>{copy.liveMap.toUpperCase()}</Text>
+          <Text style={styles.title}>{destName ? `Route: ${destName}` : routeMode ? copy.route : copy.crowd}</Text>
+        </View>
+        <View style={styles.livePill}>
+          <View style={styles.liveDot} />
+          <Text style={styles.liveText}>LIVE</Text>
+        </View>
+      </View>
+      <View style={styles.mapWrap}>
+        <MapCanvas
+          mode={routeMode ? 'route' : 'crowd'}
+          location={location}
+          destLat={destLat ? parseFloat(destLat) : undefined}
+          destLng={destLng ? parseFloat(destLng) : undefined}
+          destName={destName}
+          destPhone={phone}
+          onRecenter={() => void requestLocation()}
+        />
+      </View>
+      {location.permission !== 'granted' && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => void requestLocation()}
+          style={({ pressed }) => [styles.locationPrompt, pressed && { opacity: 0.7 }]}
+        >
+          <View style={styles.locationIcon}>
+            <Feather name="map-pin" size={17} color={colors.light.teal} />
+          </View>
+          <View style={styles.locationCopy}>
+            <Text style={styles.locationTitle}>{copy.location}</Text>
+            <Text style={styles.locationDescription}>{copy.allowLocation}</Text>
+          </View>
+          <Feather name="arrow-right" size={17} color={colors.light.teal} />
+        </Pressable>
+      )}
+      {routeMode ? (
+        <View style={styles.legend}>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: colors.light.teal }]} />
+            <Text style={styles.legendText}>Live GPS</Text>
+          </View>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendLine, { backgroundColor: '#0d9488' }]} />
+            <Text style={styles.legendText}>Walking route</Text>
+          </View>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: '#0d9488' }]} />
+            <Text style={styles.legendText}>{destName ? destName : 'Destination'}</Text>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.legend}>
+          <Text style={styles.legendHeading}>Crowd right now</Text>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: '#6d9b78' }]} />
+            <Text style={styles.legendText}>Low</Text>
+          </View>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: '#d59e2e' }]} />
+            <Text style={styles.legendText}>Moderate</Text>
+          </View>
+          <View style={styles.legendRow}>
+            <View style={[styles.legendDot, { backgroundColor: colors.light.primary }]} />
+            <Text style={styles.legendText}>High</Text>
+          </View>
+        </View>
+      )}
+      <Text style={styles.disclaimer}>Live Mapbox navigation · updated just now</Text>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({

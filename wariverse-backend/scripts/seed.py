@@ -50,6 +50,10 @@ SEED_DENSITY: dict[str, int] = {
     "temple-main": 68,
     "bhima-ghat": 45,
     "main-road": 30,
+    "mukhdarshan-queue": 25,
+    "darshan-mandap-token": 40,
+    "padsparsha-queue": 85,
+    "chandrabhaga-riverbank": 60,
 }
 
 

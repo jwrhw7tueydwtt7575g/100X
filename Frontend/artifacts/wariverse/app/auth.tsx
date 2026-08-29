@@ -1,8 +1,9 @@
 import { Feather } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -31,6 +32,23 @@ export default function AuthScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [demoBanner, setDemoBanner] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const handleGoBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)');
+    }
+  };
+
+  useEffect(() => {
+    const onBackPress = () => {
+      handleGoBack();
+      return true;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => subscription.remove();
+  }, []);
 
   const handleSendOTP = async () => {
     if (phoneNumber.length < 10) {
@@ -79,7 +97,7 @@ export default function AuthScreen() {
     try {
       await finishOnboarding(selectedLang);
       await requestLocation();
-      router.back();
+      handleGoBack();
     } catch {
       setErrorMessage('Setup failed. Please try again.');
     } finally {
@@ -93,7 +111,7 @@ export default function AuthScreen() {
       style={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16 }]}
     >
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.closeButton}>
+        <Pressable onPress={handleGoBack} style={styles.closeButton}>
           <Feather name="x" size={20} color={colors.light.foreground} />
         </Pressable>
         <Text style={styles.headerTitle}>

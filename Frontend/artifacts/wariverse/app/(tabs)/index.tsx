@@ -72,7 +72,13 @@ export default function ChatScreen() {
               onSpeak={(text) => void speak(text)}
               onStopSpeaking={() => void stopSpeaking()}
               onViewMap={() => router.push('/(tabs)/map?focus=crowd')}
-              onViewRoute={() => router.push('/(tabs)/map?focus=route')}
+              onViewRoute={(destLat, destLng, name, phone) => {
+                if (destLat && destLng) {
+                  router.push(`/(tabs)/map?focus=route&destLat=${destLat}&destLng=${destLng}&destName=${encodeURIComponent(name || 'Destination')}&phone=${encodeURIComponent(phone || '')}`);
+                } else {
+                  router.push('/(tabs)/map?focus=route');
+                }
+              }}
               onConfirmSOS={() => void confirmSOS()}
               onTalk={() => submit(copy.help)}
               onRequestLocation={() => void requestLocation()}

@@ -73,7 +73,7 @@ DEFAULT_ZONE = "temple-main"
 # seeded rows — the seed spec listed rest shelters and no overnight lodging.
 FACILITY_CATEGORIES: dict[str, list[str]] = {
     category: [category]
-    for category in ("medical", "water", "toilet", "rest", "food", "accommodation")
+    for category in ("medical", "water", "toilet", "rest", "food", "accommodation", "police")
 }
 
 
@@ -329,6 +329,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 },
                 "required": ["lat", "lng"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_palkhi_location",
+            "description": (
+                "Current live location and ETA of the Palkhi (saint's procession) "
+                "along the Wari route."
+            ),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -706,6 +717,7 @@ class LLMOrchestrator:
             "get_temple_info": self._tool_temple_info,
             "report_lost_found": self._tool_report_lost_found,
             "trigger_sos": self._tool_trigger_sos,
+            "get_palkhi_location": self._tool_get_palkhi_location,
             "escalate_to_human": self._tool_escalate,
         }
         handler = handlers.get(name)
@@ -846,9 +858,6 @@ class LLMOrchestrator:
         category = str(args.get("category") or "water")
 
         if lat is None or lng is None:
-            # Distinct from "none found": we do not know where they are. Saying
-            # "no water here" to a thirsty pilgrim whose location we never had
-            # is worse than admitting we cannot tell.
             return ToolOutcome(
                 "get_nearby_facility",
                 None,
@@ -904,6 +913,8 @@ class LLMOrchestrator:
                         # than presenting it as an official facility.
                         "free_community_seva": f.is_seva,
                         "run_by": f.provider_name,
+                        "is_locked": f.is_locked,
+                        "locked_by": f.locked_by_name,
                     }
                     for f in found
                 ],
@@ -1066,6 +1077,25 @@ class LLMOrchestrator:
             },
         )
 
+    async def _tool_get_palkhi_location(self, args, *, language, state, point) -> ToolOutcome:
+        from app.services.palkhi_service import PalkhiService
+        palkhi_svc = PalkhiService(self.db)
+        data = await palkhi_svc.get_live_position()
+        widget = {
+            "type": "palkhi_location",
+            "data": data,
+        }
+        return ToolOutcome(
+            "get_palkhi_location",
+            widget,
+            {
+                "current_place": data.get("currentPlace"),
+                "next_place": data.get("nextPlace"),
+                "eta_minutes": data.get("etaMinutes"),
+                "is_simulated": data.get("isSimulated", True),
+            },
+        )
+
     async def _tool_escalate(self, args, *, language, state, point) -> ToolOutcome:
         reason = str(args.get("reason") or "pilgrim asked for a person")
         record = await self.sessions.escalate(state, reason)
@@ -1116,10 +1146,12 @@ class LLMOrchestrator:
             tool = "get_congestion_forecast"
             args = {"zone_id": zone_from_text(text) or DEFAULT_ZONE}
         elif intent == "facility":
+            if not point or point.lat is None or point.lon is None:
+                return t("facility_need_location", language), []
             tool = "get_nearby_facility"
             args = {
-                "lat": point.lat if point else None,
-                "lng": point.lon if point else None,
+                "lat": point.lat,
+                "lng": point.lon,
                 "category": category_from_text(text),
             }
         elif intent == "route":
@@ -1140,6 +1172,8 @@ class LLMOrchestrator:
             # Filing needs details the keyword router cannot extract; point the
             # pilgrim at the form instead of inventing a report.
             return t("lost_found_prompt", language), []
+        elif intent == "palkhi":
+            tool = "get_palkhi_location"
         elif intent == "escalate":
             tool = "escalate_to_human"
             args = {"reason": "pilgrim asked for a human"}
@@ -1190,6 +1224,8 @@ class LLMOrchestrator:
         if outcome.name == "get_route_guidance":
             first = summary.get("first_step") or ""
             return f"{t('route_summary', language, destination=summary.get('destination'), distance=summary.get('distance_km'), eta=summary.get('eta_minutes'))} {first}".strip()
+        if outcome.name == "get_palkhi_location":
+            return f"The Palkhi procession is currently at {data.get('currentPlace')}. Next stop: {data.get('nextPlace')} (ETA ~{data.get('etaMinutes')} min)."
         if outcome.name == "get_temple_info":
             return t(
                 "temple_summary",
@@ -1237,18 +1273,19 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "गर्दी", "भीड", "भीड़", "रांग", "कतार", "किती वेळ", "कितनी देर", "प्रतीक्षा",
         "crowd", "rush", "queue", "how long", "wait", "waiting time", "gardi", "busy",
     ),
-    # Includes the words pilgrims actually use for community seva — a question
-    # like "Annachatra near me" has to reach facility search, not fall through
-    # to "I didn't quite catch that".
     "facility": (
         "पाणी", "पानी", "शौचालय", "स्वच्छतागृह", "टॉयलेट", "जेवण", "भोजन", "अन्नछत्र",
         "अन्नदान", "लंगर", "भंडारा", "खाणे", "खाना", "डॉक्टर", "दवाखाना", "औषध",
         "वैद्यकीय", "चिकित्सा", "निवारा", "मुक्काम", "निवास", "पोलीस", "पुलिस",
-        "मोफत", "मुफ्त", "सेवा",
+        "मोफत", "मुफ्त", "सेवा", "हॉटेल", "रेस्टॉरंट", "रेस्टोरेंट", "दवाखाने", "औषधे",
         "water", "toilet", "washroom", "food", "meal", "doctor", "medical",
         "hospital", "medicine", "shelter", "rest", "stay", "accommodation",
         "nearby", "paani", "annachatra", "annachhatra", "annadan", "langar",
         "bhandara", "seva", "free food", "free stay", "lodging", "room",
+        "restaurant", "resturant", "hotel", "dhaba", "canteen", "cafe", "eatery",
+        "snack", "dinner", "lunch", "breakfast", "clinic", "pharmacy", "chemist",
+        "dispensary", "first aid", "dharamshala", "lodge", "resort", "water post",
+        "police", "police station", "police post", "thana", "police booth",
     ),
     "route": (
         "रस्ता", "मार्ग", "कसे जायचे", "कैसे जाएं", "किती दूर", "कितनी दूर", "दिशा",
@@ -1258,6 +1295,10 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "दर्शन", "मंदिर", "आरती", "पूजा", "विठ्ठल", "पांडुरंग", "विट्ठल",
         "temple", "darshan", "aarti", "timing", "vitthal", "vithoba", "puja",
     ),
+    "palkhi": (
+        "पालखी", "पालकी", "सोहळा", "palkhi", "palki", "procession", "where is palkhi",
+        "palkhi location", "palkhi track",
+    ),
     "greeting": (
         "राम कृष्ण हरी", "जय हरी", "नमस्कार", "नमस्ते", "जय विठ्ठल", "hello", " hi ",
         " hey ", "good morning", "namaskar", "ram krishna hari",
@@ -1265,24 +1306,26 @@ _INTENT_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 _CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "water": ("पाणी", "पानी", "water", "paani", "तहान", "प्यास", "thirsty"),
-    "toilet": ("शौचालय", "स्वच्छतागृह", "टॉयलेट", "toilet", "washroom", "restroom"),
-    "medical": (
-        "डॉक्टर", "दवाखाना", "औषध", "वैद्यकीय", "चिकित्सा", "प्रथमोपचार",
-        "doctor", "medical", "hospital", "medicine", "first aid",
+    "police": (
+        "पोलीस", "पुलिस", "पोलीस स्टेशन", "पुलिस स्टेशन", "चौकी", "थाना", "पोलीस चौकी", "पुलिस चौकी",
+        "police", "police station", "cop", "cops", "thana", "police post", "outpost", "security", "police booth",
     ),
-    # "annachatra" and "langar" are what pilgrims actually say for free food;
-    # "seva" and "free" cover the community offerings specifically.
+    "water": ("पाणी", "पानी", "water", "paani", "तहान", "प्यास", "thirsty", "drinking water", "water post", "जल"),
+    "toilet": ("शौचालय", "स्वच्छतागृह", "टॉयलेट", "toilet", "washroom", "restroom", "latrine", "bathroom", "वॉशरूम"),
+    "medical": (
+        "डॉक्टर", "दवाखाना", "औषध", "वैद्यकीय", "चिकित्सा", "प्रथमोपचार", "हॉस्पिटल", "क्लिनिक", "आरोग्य", "दवाखाने", "औषधे",
+        "doctor", "medical", "hospital", "medicine", "first aid", "clinic", "pharmacy", "chemist", "dispensary", "health",
+    ),
     "food": (
-        "जेवण", "भोजन", "अन्नछत्र", "अन्नदान", "खाणे", "खाना", "भूक", "लंगर", "सेवा",
+        "जेवण", "भोजन", "अन्नछत्र", "अन्नदान", "खाणे", "खाना", "भूक", "लंगर", "सेवा", "भंडारा", "हॉटेल", "रेस्टॉरंट", "रेस्टोरेंट", "नाश्ता", "भोजनालय",
         "food", "meal", "prasad", "annachatra", "annachhatra", "annadan", "langar",
-        "free food", "seva", "bhandara", "भंडारा",
+        "free food", "seva", "bhandara", "restaurant", "resturant", "hotel", "dhaba", "canteen", "cafe", "eatery", "snack", "dinner", "lunch", "breakfast", "eating",
     ),
     "accommodation": (
-        "मुक्काम", "रात्री", "तंबू", "निवास", "राहण्याची", "ठहरने",
-        "accommodation", "stay", "sleep", "night", "lodging", "free stay", "room",
+        "मुक्काम", "रात्री", "तंबू", "निवास", "राहण्याची", "ठहरने", "धर्मशाळा", "हॉटेल",
+        "accommodation", "stay", "sleep", "night", "lodging", "free stay", "room", "hotel", "lodge", "dharamshala", "bhawan", "resort", "guest house",
     ),
-    "rest": ("निवारा", "विश्रांती", "आराम", "shelter", "rest", "shade", "sit"),
+    "rest": ("निवारा", "विश्रांती", "आराम", "shelter", "rest", "shade", "sit", "rest area"),
 }
 
 _AFFIRMATIVE = frozenset(

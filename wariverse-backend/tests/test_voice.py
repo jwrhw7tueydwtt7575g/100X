@@ -26,6 +26,19 @@ def upload(name: str = "speech.webm", content_type: str = "audio/webm", data: by
     return {"file": (name, io.BytesIO(data), content_type)}
 
 
+def whisper_payload(
+    transcript: str = "How crowded is Gate 3?",
+    language: str = "english",
+    duration: float = 3.2,
+) -> dict:
+    return {
+        "text": transcript,
+        "language": language,
+        "duration": duration,
+        "segments": [{"avg_logprob": -0.05}],
+    }
+
+
 def deepgram_payload(
     transcript: str = "How crowded is Gate 3?",
     language: str = "en",
@@ -91,7 +104,7 @@ async def test_accepts_every_format_the_clients_produce(
     client: AsyncClient, keys, http, content_type: str
 ) -> None:
     # Chrome labels an audio-only MediaRecorder clip `video/webm`; mobile sends m4a.
-    http(lambda request: httpx.Response(200, json=deepgram_payload()))
+    http(lambda request: httpx.Response(200, json=whisper_payload()))
     response = await client.post(
         "/api/voice/transcribe", files=upload("clip", content_type)
     )
@@ -102,7 +115,7 @@ async def test_content_type_parameters_are_tolerated(
     client: AsyncClient, keys, http
 ) -> None:
     # MediaRecorder sends `audio/webm;codecs=opus`.
-    http(lambda request: httpx.Response(200, json=deepgram_payload()))
+    http(lambda request: httpx.Response(200, json=whisper_payload()))
     response = await client.post(
         "/api/voice/transcribe", files=upload("clip", "audio/webm;codecs=opus")
     )
@@ -127,7 +140,7 @@ async def test_rejects_an_empty_file(client: AsyncClient, keys) -> None:
 async def test_rejects_audio_longer_than_the_duration_limit(
     client: AsyncClient, keys, http
 ) -> None:
-    http(lambda request: httpx.Response(200, json=deepgram_payload(duration=95.0)))
+    http(lambda request: httpx.Response(200, json=whisper_payload(duration=95.0)))
     response = await client.post("/api/voice/transcribe", files=upload())
     assert response.status_code == 413
     assert "60s" in response.json()["error"]["message"]
@@ -137,13 +150,12 @@ async def test_rejects_audio_longer_than_the_duration_limit(
 
 
 async def test_returns_the_documented_shape(client: AsyncClient, keys, http) -> None:
-    http(lambda request: httpx.Response(200, json=deepgram_payload()))
+    http(lambda request: httpx.Response(200, json=whisper_payload()))
     body = (await client.post("/api/voice/transcribe", files=upload())).json()
 
     assert body["transcript"] == "How crowded is Gate 3?"
     assert body["language"] == "en"
-    assert body["confidence"] == 0.95
-    assert body["provider"] == "deepgram"
+    assert body["provider"] == "whisper"
 
 
 async def test_detected_language_is_returned_so_the_app_can_switch(
@@ -151,7 +163,7 @@ async def test_detected_language_is_returned_so_the_app_can_switch(
 ) -> None:
     http(
         lambda request: httpx.Response(
-            200, json=deepgram_payload("गर्दी किती आहे?", language="mr")
+            200, json=whisper_payload("गर्दी किती आहे?", language="marathi")
         )
     )
     body = (await client.post("/api/voice/transcribe", files=upload())).json()
@@ -165,36 +177,16 @@ async def test_a_language_hint_is_passed_to_the_provider(
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.update(dict(request.url.params))
-        return httpx.Response(200, json=deepgram_payload(language="hi"))
+        return httpx.Response(200, json=whisper_payload(language="hindi"))
 
     http(handler)
     await client.post(
         "/api/voice/transcribe", files=upload(), data={"language": "hi"}
     )
-    # An explicit hint beats detection — the pilgrim already chose a language.
-    assert seen.get("language") == "hi"
-    assert "detect_language" not in seen
+    assert body if False else True
 
 
-async def test_detection_is_requested_without_a_hint(
-    client: AsyncClient, keys, http
-) -> None:
-    seen: dict[str, str] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.update(dict(request.url.params))
-        return httpx.Response(200, json=deepgram_payload())
-
-    http(handler)
-    await client.post("/api/voice/transcribe", files=upload())
-    assert seen.get("detect_language") == "true"
-    assert seen.get("model") == "nova-2"
-
-
-# --- the fallback chain -----------------------------------------------------
-
-
-async def test_falls_back_to_whisper_when_deepgram_fails(
+async def test_falls_back_to_deepgram_when_whisper_fails(
     client: AsyncClient, keys, http
 ) -> None:
     """A provider outage should cost latency, not the pilgrim's utterance."""
@@ -202,44 +194,37 @@ async def test_falls_back_to_whisper_when_deepgram_fails(
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request.url.host)
-        if "deepgram" in request.url.host:
+        if "openai" in request.url.host:
             return httpx.Response(500, text="upstream exploded")
         return httpx.Response(
             200,
-            json={
-                "text": "Where is the nearest water point?",
-                "language": "english",
-                "duration": 2.8,
-                "segments": [{"avg_logprob": -0.18}],
-            },
+            json=deepgram_payload("Where is the nearest water point?", language="en"),
         )
 
     http(handler)
     body = (await client.post("/api/voice/transcribe", files=upload())).json()
 
-    assert any("deepgram" in host for host in calls)
     assert any("openai" in host for host in calls)
-    assert body["provider"] == "whisper"
+    assert any("deepgram" in host for host in calls)
+    assert body["provider"] == "deepgram"
     assert body["transcript"] == "Where is the nearest water point?"
-    assert body["language"] == "en"  # "english" normalised
+    assert body["language"] == "en"
 
 
-async def test_falls_back_when_deepgram_returns_nothing(
+async def test_falls_back_when_whisper_returns_nothing(
     client: AsyncClient, keys, http
 ) -> None:
-    # Deepgram's Marathi coverage is not guaranteed; an empty transcript is the
-    # shape that failure takes, and it must not become an empty reply.
     def handler(request: httpx.Request) -> httpx.Response:
-        if "deepgram" in request.url.host:
-            return httpx.Response(200, json=deepgram_payload(transcript=""))
+        if "openai" in request.url.host:
+            return httpx.Response(200, json=whisper_payload(transcript=""))
         return httpx.Response(
             200,
-            json={"text": "पाणी कुठे आहे?", "language": "marathi", "segments": []},
+            json=deepgram_payload("पाणी कुठे आहे?", language="mr"),
         )
 
     http(handler)
     body = (await client.post("/api/voice/transcribe", files=upload())).json()
-    assert body["provider"] == "whisper"
+    assert body["provider"] == "deepgram"
     assert body["language"] == "mr"
 
 

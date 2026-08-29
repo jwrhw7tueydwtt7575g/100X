@@ -4,7 +4,7 @@ import * as Location from 'expo-location';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import { getCopy } from '@/constants/copy';
-import { conversationApi, DEFAULT_SESSION_ID } from '@/services/api';
+import { authApi, conversationApi, DEFAULT_SESSION_ID } from '@/services/api';
 import { mockConversationApi } from '@/services/mockApi';
 import { speechService, textToSpeechService } from '@/services/speechService';
 import type { ConversationResponse, Language, LocationState, Message, User } from '@/types/domain';
@@ -156,18 +156,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             latitude: currentLat,
             longitude: currentLng,
           });
-        } catch {
-          // Backend unreachable or offline; fall back to the local generator so
-          // a pilgrim with no signal still gets something useful.
+        } catch (apiErr) {
+          console.warn('Real conversation API failed, falling back to mock:', apiErr);
         }
 
         if (!response) {
-          response = await mockConversationApi.sendMessage({ sessionId, language, message: text.trim() });
+          response = await mockConversationApi.sendMessage({
+            sessionId,
+            language,
+            message: text.trim(),
+            latitude: currentLat,
+            longitude: currentLng,
+          });
         }
 
         const assistantMessage: Message = { id: response.messageId, role: 'assistant', text: response.responseText, timestamp: new Date().toISOString(), language: response.language, widgets: response.widgets };
         setMessages((current) => [...current, assistantMessage]);
-        if (readAloud) await textToSpeechService.speak(response.responseText, language);
+        if (readAloud || isVoice) await textToSpeechService.speak(response.responseText, language);
       } catch {
         setError('Something went wrong. Please try again.');
       } finally {
@@ -209,12 +214,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const startRecording = useCallback(async () => {
     if (isRecording || !voiceInput) return;
     setError(null);
-    await speechService.startRecording();
+    await speechService.startRecording(language);
     setIsRecording(true);
     setRecordingSeconds(0);
     timerRef.current = setInterval(() => setRecordingSeconds((seconds) => seconds + 1), 1000);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => undefined);
-  }, [isRecording, voiceInput]);
+  }, [isRecording, voiceInput, language]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
@@ -222,7 +227,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     timerRef.current = null;
     setIsRecording(false);
     const transcript = await speechService.stopRecording(language);
-    await sendMessage(transcript, true);
+    if (transcript && transcript.trim()) {
+      await sendMessage(transcript, true);
+    } else {
+      setError(
+        language === 'mr'
+          ? 'आवाज स्पष्ट ऐकू आला नाही. कृपया पुन्हा बोला किंवा टाईप करा.'
+          : language === 'hi'
+          ? 'आवाज़ साफ़ सुनाई नहीं दी। कृपया फिर से बोलें या टाइप करें।'
+          : 'No clear speech detected. Please speak into the mic or type your question.'
+      );
+    }
   }, [isRecording, language, sendMessage]);
 
   const cancelRecording = useCallback(async () => {
@@ -274,28 +289,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const loginWithPhone = useCallback(async (phoneNumber: string) => {
-    const demoOTP = '123456';
-    return { success: true, otp: demoOTP };
+    try {
+      const res = await authApi.requestOTP(phoneNumber);
+      return { success: true, otp: res.demoOtp || '123456' };
+    } catch {
+      return { success: true, otp: '123456' };
+    }
   }, []);
 
   const verifyOTP = useCallback(async (phoneNumber: string, otp: string) => {
-    if (otp === '123456' || otp.length === 6) {
-      const newUser: User = {
-        id: createId('usr'),
-        phoneNumber,
-        name: `Warkari (${phoneNumber.slice(-4)})`,
-        isAuthenticated: true,
-        createdAt: new Date().toISOString(),
-      };
-      setUser(newUser);
-      return true;
+    try {
+      const res = await authApi.verifyOTP(phoneNumber, otp);
+      if (res.success) {
+        const newUser: User = {
+          id: res.user?.id || createId('usr'),
+          phoneNumber: res.user?.phoneNumber || phoneNumber,
+          name: res.user?.name || `Warkari (${phoneNumber.slice(-4)})`,
+          isAuthenticated: true,
+          token: res.token,
+          createdAt: new Date().toISOString(),
+        };
+        setUser(newUser);
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser)).catch(() => undefined);
+        return true;
+      }
+    } catch {
+      // Fallback local validation when offline or mock mode
+      if (otp === '123456' || otp.length === 6) {
+        const newUser: User = {
+          id: createId('usr'),
+          phoneNumber,
+          name: `Warkari (${phoneNumber.slice(-4)})`,
+          isAuthenticated: true,
+          createdAt: new Date().toISOString(),
+        };
+        setUser(newUser);
+        await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser)).catch(() => undefined);
+        return true;
+      }
     }
     return false;
   }, []);
 
   const logout = useCallback(async () => {
     setUser(null);
-    await AsyncStorage.removeItem(USER_KEY);
+    setMessages([]);
+    await AsyncStorage.multiRemove([USER_KEY, MESSAGES_KEY]).catch(() => undefined);
   }, []);
 
   const value = useMemo<AppContextValue>(

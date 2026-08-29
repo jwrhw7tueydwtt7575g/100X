@@ -79,7 +79,9 @@ async def cache_get_json(key: str) -> Any | None:
     try:
         raw = await client.get(key)
     except (RedisError, OSError) as exc:
-        log.warning("redis_get_failed", key=key, error=str(exc))
+        global _healthy
+        _healthy = False
+        log.debug("redis_get_failed", key=key, error=str(exc))
         return None
     if raw is None:
         return None
@@ -102,7 +104,9 @@ async def cache_set_json(key: str, value: Any, ttl_seconds: int | None = None) -
         )
         return True
     except (RedisError, OSError) as exc:
-        log.warning("redis_set_failed", key=key, error=str(exc))
+        global _healthy
+        _healthy = False
+        log.debug("redis_set_failed", key=key, error=str(exc))
         return False
 
 
@@ -113,7 +117,9 @@ async def cache_delete(*keys: str) -> None:
     try:
         await client.delete(*keys)
     except (RedisError, OSError) as exc:
-        log.warning("redis_delete_failed", keys=keys, error=str(exc))
+        global _healthy
+        _healthy = False
+        log.debug("redis_delete_failed", keys=keys, error=str(exc))
 
 
 def _redacted_url() -> str:

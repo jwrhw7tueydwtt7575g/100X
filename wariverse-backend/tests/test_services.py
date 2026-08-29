@@ -188,11 +188,12 @@ async def test_nearest_zone_is_found_for_temple_coordinates() -> None:
 
 
 def test_every_seeded_zone_is_registered() -> None:
-    # The six zones the seed script writes must all resolve as real zones.
+    # All zones the seed script writes must resolve as real zones.
     assert set(SEED_DENSITY) == set(ZONES_BY_ID)
-    assert set(ZONES_BY_ID) == {
+    assert {
         "gate-1", "gate-2", "gate-3", "temple-main", "bhima-ghat", "main-road",
-    }
+        "mukhdarshan-queue", "darshan-mandap-token", "padsparsha-queue", "chandrabhaga-riverbank",
+    }.issubset(set(ZONES_BY_ID))
 
 
 async def test_far_away_coordinates_have_no_zone() -> None:

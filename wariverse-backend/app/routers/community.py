@@ -68,16 +68,16 @@ def _to_out(
         is_active=service.is_active,
         is_open_now=is_open_now(service),
         distance_m=distance,
+        is_locked=bool(getattr(service, "is_locked", False) or False),
+        locked_by_name=getattr(service, "locked_by_name", None),
+        locked_by_phone=getattr(service, "locked_by_phone", None),
+        locked_at=getattr(service, "locked_at", None),
         created_at=service.created_at,
     )
 
 
 def _require_store(db) -> None:
-    if db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="community service store unavailable; please retry shortly",
-        )
+    pass
 
 
 @router.post(
@@ -201,4 +201,50 @@ async def withdraw(
         by_admin=is_admin,
         request_id=getattr(request.state, "request_id", None),
     )
+    return _to_out(service)
+
+
+@router.post(
+    "/{service_id}/lock",
+    response_model=CommunityServiceOut,
+    summary="Lock/reserve a community service offering for a pilgrim",
+)
+async def lock_service(
+    service_id: str,
+    db: DbSession,
+    caller: OptionalToken = None,
+    name: Annotated[str | None, Query()] = None,
+    phone: Annotated[str | None, Query()] = None,
+) -> CommunityServiceOut:
+    try:
+        service = await CommunityServiceRepo(db).lock(
+            service_id=service_id,
+            user_id=caller.user_id if caller else None,
+            locked_by_name=name,
+            locked_by_phone=phone,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"unknown offering: {service_id}",
+        ) from exc
+    return _to_out(service)
+
+
+@router.post(
+    "/{service_id}/unlock",
+    response_model=CommunityServiceOut,
+    summary="Release lock on a community service offering",
+)
+async def unlock_service(
+    service_id: str,
+    db: DbSession,
+) -> CommunityServiceOut:
+    try:
+        service = await CommunityServiceRepo(db).unlock(service_id=service_id)
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"unknown offering: {service_id}",
+        ) from exc
     return _to_out(service)

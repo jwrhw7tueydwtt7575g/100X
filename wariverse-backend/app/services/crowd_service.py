@@ -83,6 +83,10 @@ ZONE_INTENSITY: dict[str, float] = {
     "temple-main": 1.12,
     "bhima-ghat": 0.90,
     "main-road": 0.75,
+    "mukhdarshan-queue": 0.80,
+    "darshan-mandap-token": 0.92,
+    "padsparsha-queue": 1.18,
+    "chandrabhaga-riverbank": 0.95,
 }
 
 # Bathing happens at dawn, so the ghat peaks hours before the temple does.
@@ -383,7 +387,9 @@ class CrowdService:
         try:
             raw = await client.get(f"{CACHE_PREFIX}{zone_id}")
         except (RedisError, OSError) as exc:
-            log.warning("crowd_cache_read_failed", zone_id=zone_id, error=str(exc))
+            import app.redis_client as rc
+            rc._healthy = False
+            log.debug("crowd_cache_read_failed", zone_id=zone_id, error=str(exc))
             return None
         if not raw:
             return None
@@ -421,7 +427,9 @@ class CrowdService:
                 ex=CACHE_TTL_SECONDS,
             )
         except (RedisError, OSError) as exc:
-            log.warning("crowd_cache_write_failed", zone_id=reading.zone_id, error=str(exc))
+            import app.redis_client as rc
+            rc._healthy = False
+            log.debug("crowd_cache_write_failed", zone_id=reading.zone_id, error=str(exc))
 
     async def _read_db(self, zone_id: str, language: str = "en") -> ZoneReading | None:
         if self.db is None:
