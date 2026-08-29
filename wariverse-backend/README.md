@@ -341,6 +341,63 @@ TTS request.
 
 ---
 
+## In-app IVR (`/api/ivr/session/*`)
+
+The same menu tree as the phone line, driven by the app — no telephony
+provider. The app posts keypresses and recorded audio; the backend runs the
+menu state machine and returns spoken audio as base64 MP3.
+
+| Endpoint | Does |
+| --- | --- |
+| `POST /api/ivr/session/start` | Opens a session, returns the language menu |
+| `POST /api/ivr/session/dtmf` | `{session_id, key}` → next prompt, options, widgets |
+| `POST /api/ivr/session/voice` | Recording → Whisper → orchestrator → spoken reply |
+
+Menu: **1** crowd and queue · **2** darshan and token · **3** nearby facilities
+and seva · **4** emergency · **9** speak your question · **0** replay.
+
+**The state machine is pure.** `app/services/ivr_state.py` maps
+`(state, key) → (next state, action)` with no I/O, so the whole tree is
+navigable in tests without a database, a model, or an audio provider — the part
+most likely to break when menus are reshuffled.
+
+**Pressing 4 never dispatches.** It moves to a confirmation state; only
+pressing 1 there raises the emergency. A mis-tap would otherwise send
+responders to someone who is fine, and away from someone who is not. An
+unrecognised key at that prompt re-asks rather than guessing either way.
+
+**Invalid keys never strand a caller** — they re-offer the same options with
+"press zero to replay".
+
+**Menu position is written through to Postgres**, not just Redis. A stale
+`sos_confirm` surviving a cache flush would turn the next "1" into an
+unintended dispatch.
+
+**Two things this channel has that a phone call does not:** the app knows the
+GPS, so "nearby facilities" is answerable without asking where you are; and
+there is a screen, so menu choices return widgets alongside the audio. The
+telephone IVR still gets no widgets — that suppression is about the display,
+not about the reply being spoken.
+
+**Audio** comes from OpenAI `tts-1` (`VoiceService`), cached in Redis under its
+own `openai` namespace so it never collides with the ElevenLabs audio
+`/api/voice/speak` produces for the same sentence. If no key is configured the
+prompt is returned as text with `audio_base64: null` and the app falls back to
+on-device speech — a menu that reads itself badly beats a menu that will not
+open.
+
+> ⚠️ **OpenAI has no Marathi-accented voice.** `tts-1` will read Marathi text,
+> but pronounces place names noticeably worse than the Google WaveNet voice
+> `/api/voice/speak` uses for `mr`. There is no `marathi-accent` voice — the
+> published set is alloy, echo, fable, onyx, nova, shimmer. Point
+> `VoiceService.speak` at `tts.synthesize()` if IVR audio quality in Marathi
+> matters more than provider uniformity.
+
+The Twilio webhooks at `/api/ivr/voice/*` are untouched and still
+signature-checked; a test asserts the two channels have not been merged.
+
+---
+
 ## Voice IVR
 
 Dialling the helpline reaches the same assistant, so a pilgrim with a feature

@@ -223,6 +223,65 @@ class ProfileUpdateResponse(Schema):
     user: UserProfile
 
 
+# --- in-app IVR -------------------------------------------------------------
+
+IvrState = Literal["language", "menu", "sos_confirm", "speech", "ended"]
+
+
+class IvrOption(Schema):
+    key: str = Field(examples=["1"])
+    label: str
+
+
+class IvrResponse(Schema):
+    """One IVR turn: what to say, what to play, and what may be pressed next."""
+
+    session_id: str
+    state: IvrState
+    language: Language
+    prompt: str = Field(description="Spoken text. Render it if audio is absent.")
+    audio_base64: str | None = Field(
+        default=None,
+        description="MP3 of `prompt`. Null when no speech provider is "
+        "configured — fall back to on-device TTS rather than failing.",
+    )
+    media_type: str = "audio/mpeg"
+    options: list[IvrOption] = Field(default_factory=list)
+    # Present when a menu choice produced a card, so the app can show it while
+    # the audio plays.
+    widgets: list[Widget] = Field(default_factory=list)
+    ends_session: bool = False
+
+
+class IvrStartRequest(ClientSchema):
+    session_id: str | None = Field(
+        default=None, max_length=200, examples=["wariverse-session"]
+    )
+    language: Language | None = Field(
+        default=None, description="Skip the language menu when already known."
+    )
+    latitude: Latitude | None = None
+    longitude: Longitude | None = None
+
+
+class IvrDtmfRequest(ClientSchema):
+    session_id: str = Field(max_length=200)
+    key: str = Field(..., min_length=1, max_length=1, examples=["1"])
+    latitude: Latitude | None = None
+    longitude: Longitude | None = None
+    turn_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Client-generated id for this keypress. Retrying a request that "
+            "already succeeded replays the stored answer instead of pressing "
+            "the key a second time. Send a fresh id per keypress, and the same "
+            "id on every retry of it."
+        ),
+        examples=["t-4f2c9a10"],
+    )
+
+
 # --- voice ------------------------------------------------------------------
 
 VoiceLanguage = Literal["en", "hi", "mr"]

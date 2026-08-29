@@ -298,6 +298,25 @@ export default function SettingsScreen() {
         </Pressable>
       )}
 
+      {/* --- HELPLINE --- */}
+      <SectionTitle label="Helpline" />
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => router.push('/ivr-dialer')}
+        style={styles.locationRow}
+      >
+        <View style={styles.settingIcon}>
+          <Feather name="phone-call" size={17} color={colors.light.teal} />
+        </View>
+        <View style={styles.settingCopy}>
+          <Text style={styles.settingTitle}>Call WariVerse Helpline</Text>
+          <Text style={styles.settingDescription}>
+            Menu-driven help over your data connection — no airtime used
+          </Text>
+        </View>
+        <Feather name="chevron-right" size={17} color={colors.light.mutedForeground} />
+      </Pressable>
+
       {/* --- COMMUNITY SEVA & CHARITY --- */}
       <SectionTitle label="Community Seva & Charity" />
       <Pressable

@@ -329,14 +329,22 @@ class CommunityServiceRepo:
             except Exception as exc:  # noqa: BLE001
                 log.warning("community_service_owned_read_failed", error=str(exc))
 
-        # Merge in-memory services owned by user/token
+        # Merge in-memory services owned by this user or token.
+        #
+        # A caller with NEITHER gets nothing. Matching everything when there are
+        # no credentials would make `?mine=true` hand a stranger every
+        # provider's listing — contact phone numbers included.
+        if user_id is None and not tokens:
+            return rows[:limit]
+
         token_hashes = [hash_token(t) for t in (tokens or [])]
+        known = {r.id for r in rows}
         for svc, _ in _IN_MEMORY_SERVICES.values():
-            if svc.is_active:
-                match_user = user_id is not None and svc.user_id == user_id
-                match_token = svc.owner_token_hash in token_hashes
-                if match_user or match_token or (not user_id and not tokens):
-                    if svc.id not in {r.id for r in rows}:
-                        rows.append(svc)
+            if not svc.is_active or svc.id in known:
+                continue
+            match_user = user_id is not None and svc.user_id == user_id
+            match_token = svc.owner_token_hash in token_hashes
+            if match_user or match_token:
+                rows.append(svc)
 
         return rows[:limit]

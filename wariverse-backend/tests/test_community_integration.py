@@ -178,15 +178,17 @@ async def test_future_offerings_do_not_pin_yet(live_client: AsyncClient) -> None
 
 
 async def test_seva_appears_in_the_facilities_endpoint(
-    live_client: AsyncClient,
+    live_client: AsyncClient, spot
 ) -> None:
-    body = await publish(live_client)
+    # Its own coordinate: offerings persist across runs, and a shared point
+    # eventually pushes the new one past the result limit.
+    body = await publish(live_client, at=spot)
 
     found = (
         await live_client.get(
             "/api/facilities/nearby",
-            params={"lat": LAT, "lng": LNG, "category": "food", "radius_m": 2000,
-                    "language": "en"},
+            params={"lat": spot[0], "lng": spot[1], "category": "food",
+                    "radius_m": 2000, "language": "en"},
         )
     ).json()["facilities"]
 
@@ -293,8 +295,13 @@ async def test_seva_is_ordered_by_distance_alongside_official_places(
 
 
 def _metres(distance: str) -> float:
-    value, unit = distance.split(" ", 1)
-    return float(value) * (1000 if unit.strip() == "km" else 1)
+    """Parse the leading magnitude from a rendered distance.
+
+    The string carries extra detail now — `0.1 km (North-East • 1 min walk)` —
+    so only the first two tokens are the measurement.
+    """
+    parts = distance.split()
+    return float(parts[0]) * (1000 if parts[1].startswith("km") else 1)
 
 
 # --- withdrawing ------------------------------------------------------------

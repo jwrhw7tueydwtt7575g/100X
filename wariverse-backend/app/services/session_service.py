@@ -81,6 +81,8 @@ class SessionState:
     escalation: dict[str, Any] | None = None
     # IVR call metadata, set when the call ends.
     call: dict[str, Any] | None = None
+    # In-app IVR menu position, e.g. {"state": "menu"}.
+    ivr: dict[str, Any] | None = None
     last_lat: float | None = None
     last_lon: float | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -97,6 +99,7 @@ class SessionState:
             "pending_sos": self.pending_sos,
             "escalation": self.escalation,
             "call": self.call,
+            "ivr": self.ivr,
             "last_intent": self.last_intent,
             "last_location": (
                 {"lat": self.last_lat, "lon": self.last_lon}
@@ -132,6 +135,7 @@ class SessionState:
             pending_sos=bool(raw.get("pending_sos", False)),
             escalation=raw.get("escalation"),
             call=raw.get("call"),
+            ivr=raw.get("ivr"),
             last_lat=location.get("lat"),
             last_lon=location.get("lon"),
             messages=list(raw.get("history") or []),
@@ -295,6 +299,17 @@ class SessionService:
         await self.save(state)
         await self._sync_context(state)
 
+    async def sync_context(self, state: SessionState) -> None:
+        """Write the hot state through to `sessions.context_json`.
+
+        Callers that change something a stale copy could act on — the IVR menu
+        position most of all — should use this rather than `save()` alone. If
+        Redis were lost while the durable copy still said `sos_confirm`, the
+        pilgrim's next keypress could dispatch an emergency they had moved on
+        from.
+        """
+        await self._sync_context(state)
+
     async def escalate(self, state: SessionState, reason: str) -> dict[str, Any]:
         """Flag a session for a human volunteer to pick up.
 
@@ -418,6 +433,7 @@ class SessionService:
             pending_sos=bool(context.get("pending_sos", False)),
             escalation=context.get("escalation"),
             call=context.get("call"),
+            ivr=context.get("ivr"),
             last_lat=location.get("lat"),
             last_lon=location.get("lon"),
             messages=list(context.get("history") or []),

@@ -82,28 +82,34 @@ def normalise_language(value: str | None, default: str = "en") -> str:
 
 
 async def transcribe(
-    audio: bytes, content_type: str, language_hint: str | None = None
+    audio: bytes,
+    content_type: str,
+    language_hint: str | None = None,
+    prefer: str = "whisper",
 ) -> Transcript:
-    """Transcribe audio, trying OpenAI Whisper first then falling back to Deepgram."""
+    """Transcribe audio, trying both providers in turn.
+
+    `prefer` names which goes first; the other is the fallback, so one provider
+    being down costs latency rather than the pilgrim's utterance. Whisper leads
+    by default because it handles Marathi reliably and Deepgram's Nova-2
+    language list has not always included it.
+    """
+    order = (
+        ("deepgram", "whisper") if prefer == "deepgram" else ("whisper", "deepgram")
+    )
+    providers = {"deepgram": _deepgram, "whisper": _whisper}
+    keys = {"deepgram": settings.deepgram_api_key, "whisper": settings.openai_api_key}
+
     errors: list[str] = []
-
-    if settings.openai_api_key:
+    for name in order:
+        if not keys[name]:
+            errors.append(f"{name}: no API key")
+            continue
         try:
-            return await _whisper(audio, content_type, language_hint)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"whisper: {exc}")
-            log.error("whisper_failed", error=str(exc))
-    else:
-        errors.append("whisper: no API key")
-
-    if settings.deepgram_api_key:
-        try:
-            return await _deepgram(audio, content_type, language_hint)
+            return await providers[name](audio, content_type, language_hint)
         except Exception as exc:  # noqa: BLE001 — fall through to the next provider
-            errors.append(f"deepgram: {exc}")
-            log.warning("deepgram_failed", error=str(exc))
-    else:
-        errors.append("deepgram: no API key")
+            errors.append(f"{name}: {exc}")
+            log.warning("stt_provider_failed", provider=name, error=str(exc))
 
     raise TranscriptionError("; ".join(errors))
 

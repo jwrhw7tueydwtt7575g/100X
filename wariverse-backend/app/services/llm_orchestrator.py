@@ -495,8 +495,13 @@ class LLMOrchestrator:
         location: GeoPoint | None = None,
         user_id: UUID | None = None,
         is_voice: bool = False,
+        with_widgets: bool | None = None,
     ) -> OrchestratorResult:
-        """One conversation turn. `session_id` is the client's opaque string."""
+        """One conversation turn. `session_id` is the client's opaque string.
+
+        `with_widgets` overrides the per-channel default: telephone IVR gets
+        none (no screen), everything else gets them.
+        """
         started = time.perf_counter()
 
         state = await self.sessions.resolve(
@@ -547,10 +552,11 @@ class LLMOrchestrator:
             reply, outcomes = await self._rule_based(user_message, lang, point, state)
             source = "rules"
 
-        # IVR is a phone call: there is no screen to render a card on.
-        widgets = (
-            [w for o in outcomes for w in o.widgets] if channel != "ivr" else []
-        )
+        # A telephone call has no screen to render a card on. The *in-app* IVR
+        # does, so it passes with_widgets=True — the suppression is about the
+        # display, not about the reply being spoken.
+        show_widgets = channel != "ivr" if with_widgets is None else with_widgets
+        widgets = [w for o in outcomes for w in o.widgets] if show_widgets else []
         requires_confirmation = any(
             o.widget and o.widget["type"] == "sos"
             and o.widget["data"]["status"] == "CONFIRMATION_REQUIRED"

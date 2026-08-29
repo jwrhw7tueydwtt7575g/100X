@@ -98,8 +98,26 @@ class Settings(BaseSettings):
     google_application_credentials: str | None = None
     google_tts_api_key: str | None = None
     google_tts_voice_mr: str = "mr-IN-Wavenet-A"
+    # Used by the in-app IVR only; /api/voice/speak keeps ElevenLabs + Google.
+    # NOTE: OpenAI publishes voices alloy, echo, fable, onyx, nova and shimmer —
+    # there is no Marathi-accented voice, so `mr` prompts are read with an
+    # English accent. See the note in app/services/tts.py.
+    openai_tts_model: str = "tts-1"
+    openai_tts_voice: str = "alloy"
     tts_cache_ttl_seconds: int = 86_400  # 24 hours
     tts_max_characters: int = 1000
+    # Static IVR menu prompts get their own, much longer TTL. Their text only
+    # changes when we edit app/services/ivr_state.py, so expiring them daily
+    # buys nothing and costs a re-synthesis of the same bytes every morning.
+    ivr_static_audio_ttl_seconds: int = 2_592_000  # 30 days
+    # Synthesise the whole static menu set at boot so the first caller of the
+    # day does not pay OpenAI latency partway through a menu.
+    ivr_warm_audio_on_startup: bool = True
+    # How long a completed IVR turn can be replayed for. Covers a client that
+    # retried because the reply was lost in transit; long enough for a couple of
+    # backoff rounds on a bad connection, short enough that a genuine second
+    # press of the same key is never mistaken for a retry.
+    ivr_turn_replay_ttl_seconds: int = 120
 
     # --- ivr ---------------------------------------------------------------
     # Twilio webhooks are public URLs, so every request is signature-checked

@@ -32,13 +32,14 @@ from app.routers import (
     crowd,
     facilities,
     ivr,
+    ivr_session,
     lost_found,
     routes,
     sos,
     temple,
     voice,
 )
-from app.services import crowd_simulator
+from app.services import crowd_simulator, ivr_audio_cache
 
 log = structlog.get_logger(__name__)
 
@@ -84,6 +85,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # see app/services/crowd_simulator.py.
     crowd_simulator.start()
 
+    # Fills the static IVR menu audio in the background. Never awaited — a slow
+    # or rate-limited TTS provider must not delay readiness, and the IVR answers
+    # from the live synthesis path until this finishes.
+    ivr_audio_cache.start()
+
     log.info(
         "startup_complete",
         database="ok" if db_ok else "degraded",
@@ -94,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    await ivr_audio_cache.stop()
     await crowd_simulator.stop()
     await close_redis()
     await close_db()
@@ -217,6 +224,6 @@ async def readiness() -> ReadinessResponse:
 
 for module in (
     conversation, crowd, facilities, routes, temple, lost_found, sos, auth, admin,
-    ivr, voice, community, community_facilities,
+    ivr, ivr_session, voice, community, community_facilities,
 ):
     app.include_router(module.router, prefix=settings.api_prefix)

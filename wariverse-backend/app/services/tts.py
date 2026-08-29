@@ -47,9 +47,16 @@ class SynthesisError(RuntimeError):
     """No provider could produce audio for this request."""
 
 
-def cache_key(text: str, language: str) -> str:
-    digest = hashlib.sha256(f"{text}|{language}".encode()).hexdigest()
-    return f"{CACHE_PREFIX}{digest}"
+def cache_key(text: str, language: str, provider: str = "") -> str:
+    """Cache key for a clip.
+
+    `provider` is empty for the language's default provider, which keeps the
+    historical key shape so existing cache entries stay valid. The in-app IVR
+    passes `openai`, giving its differently-voiced audio its own namespace
+    rather than colliding with ElevenLabs output for the same sentence.
+    """
+    material = f"{text}|{language}|{provider}" if provider else f"{text}|{language}"
+    return f"{CACHE_PREFIX}{hashlib.sha256(material.encode()).hexdigest()}"
 
 
 def provider_for(language: str) -> str:
@@ -67,7 +74,7 @@ def is_configured(language: str) -> bool:
 # --- cache ------------------------------------------------------------------
 
 
-async def cached(text: str, language: str) -> bytes | None:
+async def cached(text: str, language: str, provider: str = "") -> bytes | None:
     """Previously synthesised audio, if any.
 
     Stored base64-encoded because the shared Redis client decodes responses as
@@ -78,7 +85,7 @@ async def cached(text: str, language: str) -> bytes | None:
     if client is None:
         return None
     try:
-        raw = await client.get(cache_key(text, language))
+        raw = await client.get(cache_key(text, language, provider))
     except (RedisError, OSError) as exc:
         log.warning("tts_cache_read_failed", error=str(exc))
         return None
@@ -91,15 +98,22 @@ async def cached(text: str, language: str) -> bytes | None:
         return None
 
 
-async def store(text: str, language: str, audio: bytes) -> None:
+async def store(
+    text: str,
+    language: str,
+    audio: bytes,
+    provider: str = "",
+    ttl: int | None = None,
+) -> None:
+    """Cache a clip. `ttl` overrides the default for prompts that rarely change."""
     client = get_redis()
     if client is None or not audio:
         return
     try:
         await client.set(
-            cache_key(text, language),
+            cache_key(text, language, provider),
             base64.b64encode(audio).decode("ascii"),
-            ex=settings.tts_cache_ttl_seconds,
+            ex=ttl if ttl is not None else settings.tts_cache_ttl_seconds,
         )
     except (RedisError, OSError) as exc:
         log.warning("tts_cache_write_failed", error=str(exc))
@@ -141,6 +155,73 @@ async def synthesize(text: str, language: str) -> AsyncIterator[bytes]:
 async def synthesize_bytes(text: str, language: str) -> bytes:
     """The whole clip at once — for callers that need it base64-encoded."""
     return b"".join([chunk async for chunk in synthesize(text, language)])
+
+
+OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
+OPENAI_PROVIDER = "openai"
+
+
+def openai_configured() -> bool:
+    return bool(settings.openai_api_key)
+
+
+async def synthesize_openai(text: str, language: str) -> AsyncIterator[bytes]:
+    """OpenAI `tts-1`, used by the in-app IVR.
+
+    Kept separate from `synthesize()` so the existing `/api/voice/speak`
+    routing (ElevenLabs for en/hi, Google WaveNet for mr) is untouched.
+
+    ⚠️ OpenAI's voices are English-accented. `tts-1` will *read* Marathi and
+    Hindi text, but it pronounces place names noticeably worse than the
+    Google WaveNet voice `/api/voice/speak` uses for `mr`. If IVR audio quality
+    in Marathi matters, point this at `tts.synthesize()` instead — the menu
+    prompts are short and heavily cached either way.
+    """
+    if hit := await cached(text, language, OPENAI_PROVIDER):
+        log.info("tts_cache_hit", language=language, provider=OPENAI_PROVIDER,
+                 bytes=len(hit))
+        yield hit
+        return
+
+    if not openai_configured():
+        raise SynthesisError("OPENAI_API_KEY is not set")
+
+    log.info(
+        "tts_synthesising",
+        language=language,
+        provider=OPENAI_PROVIDER,
+        model=settings.openai_tts_model,
+        characters=len(text),
+    )
+
+    chunks: list[bytes] = []
+    async with httpx.AsyncClient(timeout=settings.voice_timeout_seconds) as client:
+        async with client.stream(
+            "POST",
+            OPENAI_TTS_URL,
+            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            json={
+                "model": settings.openai_tts_model,
+                "voice": settings.openai_tts_voice,
+                "input": text,
+                "response_format": "mp3",
+            },
+        ) as response:
+            if response.status_code != 200:
+                body = (await response.aread()).decode("utf-8", "replace")[:200]
+                raise SynthesisError(f"openai tts {response.status_code}: {body}")
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    chunks.append(chunk)
+                    yield chunk
+
+    # Committed only once the stream finishes, so a dropped connection cannot
+    # leave a truncated clip cached forever.
+    await store(text, language, b"".join(chunks), OPENAI_PROVIDER)
+
+
+async def synthesize_openai_bytes(text: str, language: str) -> bytes:
+    return b"".join([chunk async for chunk in synthesize_openai(text, language)])
 
 
 async def _elevenlabs(text: str, language: str) -> AsyncIterator[bytes]:

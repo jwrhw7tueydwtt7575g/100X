@@ -152,6 +152,65 @@ export type EscalationWidget = {
   };
 };
 
+/* -------------------------------------------------------------------------- */
+/* IVR                                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Where the caller is in the backend menu tree. Mirrors `IvrState` server-side. */
+export type IVRMenuState = 'language' | 'menu' | 'sos_confirm' | 'speech' | 'ended';
+
+/** The call's own lifecycle, which is separate from the menu position. */
+export type IVRCallState =
+  | 'idle'
+  | 'dialing'
+  | 'connecting'
+  /** A request failed on the network and is being retried. */
+  | 'reconnecting'
+  | 'connected'
+  /** Hold-to-talk is down, but the prompt is still playing. */
+  | 'waiting'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'ended'
+  | 'failed';
+
+export type IVROption = {
+  key: string;
+  label: string;
+};
+
+/** One turn from `/api/ivr/session/*`, after camelCase conversion. */
+export type IVRTurn = {
+  sessionId: string;
+  state: IVRMenuState;
+  language: Language;
+  prompt: string;
+  /** MP3 of `prompt`. Null when the backend has no speech provider configured. */
+  audioBase64: string | null;
+  mediaType: string;
+  options: IVROption[];
+  widgets?: ToolWidget[];
+  endsSession: boolean;
+};
+
+export type IVRPreset = {
+  /** Shown on the card and dialled into the keypad. */
+  number: string;
+  label: string;
+  description: string;
+  /** Skips the language menu when the line is language-specific. */
+  language?: Language;
+  /** Emergency lines get a different treatment on screen. */
+  emergency?: boolean;
+  /**
+   * Keys sent automatically once connected, to land the caller deeper in the
+   * menu. Used so the emergency line reaches its confirmation prompt directly
+   * instead of making someone in trouble navigate there.
+   */
+  autoKeys?: string[];
+};
+
 export type LocationState = {
   latitude: number | null;
   longitude: number | null;

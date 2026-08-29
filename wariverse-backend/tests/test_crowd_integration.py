@@ -140,10 +140,14 @@ async def test_trend_is_derived_from_the_previous_reading(
 async def test_simulator_tick_updates_every_zone(live_client: AsyncClient) -> None:
     from app.services.crowd_simulator import tick
 
-    written = await tick()
-    assert written == 6
+    from app.data.reference import ZONES_BY_ID
 
-    for zone_id in ("gate-1", "gate-2", "gate-3", "temple-main", "bhima-ghat", "main-road"):
+    written = await tick()
+    # Every registered zone, whatever the registry currently holds — a hard
+    # count goes stale the moment a zone is added.
+    assert written == len(ZONES_BY_ID)
+
+    for zone_id in ZONES_BY_ID:
         row = await _latest(zone_id)
         assert row is not None
         assert row.source == "model"
