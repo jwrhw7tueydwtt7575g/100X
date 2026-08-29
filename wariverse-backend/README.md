@@ -11,15 +11,36 @@ raise an emergency SOS.
 
 ## Quick start
 
-### Docker (everything, including Postgres and Redis)
+### Docker (everything: API, Postgres, Redis, nginx)
 
 ```bash
-cp .env.example .env          # fill in OPENAI_API_KEY and JWT_SECRET
+cp .env.example .env          # JWT_SECRET and ADMIN_API_KEY are required
 docker compose up --build
 ```
 
-The `api` container runs migrations, seeds reference data, then serves on
-<http://localhost:8000>. Interactive docs: <http://localhost:8000/docs>.
+Five services come up: `nginx` (:80) → `api` (4 uvicorn workers) → `postgres`
++ `redis`, plus a single-replica `crowd-simulator`. The api container runs
+migrations and the idempotent seed before serving. Interactive docs:
+<http://localhost:8000/docs>.
+
+`JWT_SECRET` is a hard requirement — compose refuses to start without it rather
+than booting with a default that signs real tokens.
+
+**Why the simulator is its own service.** The API runs `--workers 4`, and the
+crowd simulator must be exactly one process — four copies would overwrite each
+other's readings every few minutes. So the API sets
+`CROWD_SIMULATOR_ENABLED=false` and `scripts/simulate_crowd.py` owns it. Delete
+that service once the real CCTV feed writes `crowd_density_readings`.
+
+**nginx** sets `client_max_body_size 12m` (the voice upload is 10 MB; nginx's
+1 MB default would reject it with its own 413 before the app saw it) and
+forwards `X-Forwarded-Proto`. That header is not cosmetic: the Twilio IVR
+signature check hashes the public URL, so without the real scheme every voice
+webhook would 403. TLS is scaffolded but commented out — nginx refuses to start
+when certificate files are missing, which would take the whole stack down on a
+first `compose up`. Drop certs in `nginx/certs/` and uncomment.
+
+`CORS_ORIGINS` accepts either `a,b,c` or `["a","b"]`.
 
 ### Local
 
@@ -61,10 +82,15 @@ Base prefix `/api`. All request and response bodies are snake_case JSON.
 | GET | `/api/facilities/nearby` | Facilities near a coordinate, nearest first |
 | GET | `/api/routes/guidance` | Walking route to the temple, avoiding congested zones |
 | GET | `/api/temple/info` | Timings, rituals, events and visitor guidance |
+| POST | `/api/voice/transcribe` | Speech → text (Deepgram, Whisper fallback) |
+| POST | `/api/voice/speak` | Text → streamed MP3 (ElevenLabs / Google) |
 | PUT | `/api/admin/temple/info` | Edit the temple card — **`X-API-Key` required** |
 | POST | `/api/lost-found` | File a lost person / lost item report |
 | GET | `/api/lost-found/{reference_id}` | Look up a report by reference id (`WF-2026-00124`) |
-| POST | `/api/sos/trigger` | Panic button — dispatch help to a coordinate |
+| POST | `/api/sos/trigger` | Panic button — raise an emergency (no auth) |
+| POST | `/api/sos/{sos_id}/resolve` | Close an emergency — **`X-API-Key` required** |
+| POST | `/api/sos/{sos_id}/update-status` | Move it between states — **`X-API-Key`** |
+| GET | `/api/admin/sos/active` | Unresolved emergencies — **`X-API-Key`** |
 | POST | `/api/auth/otp/send` | Send a login OTP (max 3 per number per hour) |
 | POST | `/api/auth/otp/verify` | Verify the OTP, receive a 30-day JWT |
 | GET | `/api/auth/me` | Current user profile — **auth required** |
@@ -89,6 +115,40 @@ curl -s localhost:8000/api/conversation/message \
   -H 'content-type: application/json' \
   -d '{"text":"जवळ पाणी कुठे मिळेल?","location":{"lat":17.6786,"lon":75.33}}'
 ```
+
+---
+
+## Connecting the app
+
+`Frontend/artifacts/wariverse/services/api.ts` is the real client;
+`mockApi.ts` stays as the offline fallback, so a pilgrim with no signal still
+gets a usable reply instead of an error. Point the app at the backend with:
+
+```
+# Frontend/artifacts/wariverse/.env.local
+EXPO_PUBLIC_API_URL=http://localhost:8000
+```
+
+On a physical device `localhost` is the phone — use your machine's LAN IP. Left
+unset, the client derives the host from Metro automatically.
+
+**Casing is converted in the app, not the API.** The backend is snake_case
+throughout; `api.ts` runs one recursive `camelizeKeys` over every response.
+
+That is not merely a preference. Widget `data` is an untyped `dict[str, Any]`
+on the backend, and Pydantic aliases only rename *declared model fields* — so
+`response_model_by_alias` with camelCase aliases would leave `zone_id`,
+`updated_at`, `route_coordinates` and the rest untouched. Those are exactly the
+fields the widget cards read. A transform on the client is the only approach
+that covers them, and it needs no per-schema maintenance as widgets are added.
+
+Verified against the running stack: `session_id → sessionId`,
+`response_text → responseText`, `zone_id → zoneId`, `updated_at → updatedAt`,
+`route_coordinates → routeCoordinates`, `estimated_time → estimatedTime`,
+`avoid_areas → avoidAreas`, `control_room_status → controlRoomStatus`,
+`incident_type → incidentType`, `reference_id → referenceId`,
+`next_action → nextAction`. Widget `type` discriminators (`crowd_density`)
+stay as-is — they are values, not keys.
 
 ---
 
@@ -231,6 +291,101 @@ sequence. `status` is returned as the human label the app prints (`"Searching"`,
 `wv:lost_found:reports` Redis channel for the control-room dashboard — after
 the row is committed, so a dead dashboard cannot cost a family their reference
 number.
+
+---
+
+## Voice pipeline (app)
+
+| Endpoint | Does |
+| --- | --- |
+| `POST /api/voice/transcribe` | multipart audio → `{transcript, language, confidence}` |
+| `POST /api/voice/speak` | `{text, language}` → streamed `audio/mpeg` |
+
+**Speech to text** tries Deepgram Nova-2, then falls back to OpenAI Whisper —
+a provider outage should cost latency, not the pilgrim's utterance. The
+detected language comes back so the app can switch itself. Accepts webm/ogg
+(browsers, including the `video/webm` Chrome labels audio-only clips with),
+m4a/mp4 (mobile), mp3, wav and flac.
+
+> ⚠️ **Deepgram's Marathi coverage is not guaranteed.** Whisper transcribes
+> Marathi reliably; Deepgram's Nova-2 language list changes and `mr` has not
+> always been on it. If it is unsupported for your account, Deepgram returns an
+> empty transcript or mis-detects Hindi, and the code falls through to Whisper —
+> correct, but slower and dearer. Verify before launch.
+
+Whisper reports no confidence, so it is estimated as `exp(mean avg_logprob)`
+over the segments. Treat it as a hint, not a measurement — it is documented as
+such in the response schema.
+
+**Text to speech** routes English and Hindi to ElevenLabs
+`eleven_multilingual_v2`, and Marathi to Google `mr-IN-Wavenet-A`, because
+ElevenLabs mispronounces Marathi badly enough that a pilgrim would hear their
+own language mangled. Audio is cached in Redis under `tts:{sha256(text|lang)}`
+for 24 hours; the assistant repeats itself constantly and re-synthesising a
+byte-identical clip is money burnt. Chunks stream to the caller *and*
+accumulate into the cache, which is only committed once the provider stream
+finishes — so a truncated download never becomes a permanently truncated cache
+entry.
+
+**Limits:** 10 MB upload, enforced before any paid call. 60 s duration, checked
+from provider metadata *after* the call (duration is not knowable without
+decoding, which is why the size cap is the real guard). 1000 characters per
+TTS request.
+
+> ### ⚠️ Neither endpoint is rate limited
+>
+> Both spend money per call on third-party APIs and are open to anyone who can
+> reach them. Before this is public, put a limit in front of them (the pattern
+> in `app/routers/conversation.py` works) or require a bearer token — an
+> unmetered STT endpoint is somebody else's free transcription service.
+
+---
+
+## Voice IVR
+
+Dialling the helpline reaches the same assistant, so a pilgrim with a feature
+phone and no data gets the tools an app user gets.
+
+| Twilio webhook | Does |
+| --- | --- |
+| `POST /api/ivr/voice/answer` | Greets in Marathi, Hindi and English; asks for 1/2/3 |
+| `POST /api/ivr/voice/language` | Stores the choice on the call's session |
+| `POST /api/ivr/voice/transcribe` | Speech → orchestrator → `<Say>` → listen again |
+| `POST /api/ivr/voice/dtmf` | Digit shortcuts |
+| `POST /api/ivr/voice/status` | Records how the call ended |
+
+Digits: **1** forecast · **2** crowd now · **3** nearest facility · **9**
+emergency · **0** human volunteer (hold music + `wv:escalation:requests`).
+
+**`CallSid` is the session id**, so the orchestrator sees one continuous
+conversation and the transcript lands in `messages` under a session with
+`channel="ivr"` and `is_voice=true`.
+
+**Voices** are Indian-accented: `Polly.Aditi` for English and Hindi (it is
+bilingual), `Google.mr-IN-Standard-A` for Marathi, which has no Polly voice.
+The IVR system prompt caps replies at two sentences with no lists or digits —
+it is being read aloud to someone walking.
+
+> ### ⚠️ Every webhook is signature-checked
+>
+> These are public URLs with no other authentication, and **digit 9 dispatches
+> responders**. Without validation anyone who learns the URL could send
+> volunteers to fabricated locations. Requests are verified against
+> `TWILIO_AUTH_TOKEN`; an unset token makes the endpoints **503**, never open.
+> Behind a proxy you must set `IVR_PUBLIC_BASE_URL` — validation hashes the URL
+> and the internal `http://` one will not match what Twilio signed.
+
+**Transcripts are written per turn, not at call end.** A dropped call would
+otherwise lose the entire conversation, including an emergency mentioned in it.
+The status webhook only records call metadata (duration, outcome) on the
+session.
+
+**A phone caller has no GPS.** An emergency raised by pressing 9 is still
+recorded, with the caller's number, and the caller is told the control room
+will ring back — refusing it for want of a fix would be the worst possible
+failure. If the caller says where they are ("I am near Gate 2"), the session is
+pinned to that zone and later answers, including `nearest facility`, become
+location-aware. `nearest facility` refuses to guess before then.
 
 ---
 
@@ -388,10 +543,30 @@ provider; outside production the code is echoed as `debug_otp` so the app can
 be exercised end to end.
 
 **SOS is unauthenticated by design.** A pilgrim in trouble who never registered
-must still be able to call for help. Because `sos_events.session_id` is NOT
-NULL, an anonymous panic press gets a session created for it rather than being
-rejected. A bearer token, when present, attributes the event so responders can
-call back.
+must still be able to call for help, and an emergency is not the moment to
+discover your token expired. Because `sos_events.session_id` is NOT NULL, an
+anonymous panic press gets a session created for it rather than being rejected.
+A bearer token, when present, attributes the event so responders can call back.
+
+**The SOS trigger sequence is fixed, and the order matters:**
+
+1. Persist as `PENDING` **and commit** — the durable record exists before
+   anyone is told about it, so a crash after this point still leaves an
+   emergency the control room can find.
+2. Publish the full event to the `sos:new` Redis channel.
+3. Mark `ACTIVATED` and answer the pilgrim.
+4. SMS the control room, if `CONTROL_ROOM_PHONE` and an SMS provider are set.
+
+A **failed publish still activates**: pub/sub is a live-push optimisation, and
+`GET /api/admin/sos/active` reads Postgres, so the dashboard sees the event
+either way. Leaving it `PENDING` would make a delivered emergency look
+undispatched. The card is honest about it though — `control_room_status` reads
+`Connected` only when the publish actually went out, `Standing by` otherwise.
+
+A **failed database write does not fail the request**. The pilgrim still gets
+an acknowledgement and the failure is logged at error level for manual
+reconciliation; returning a 500 to someone whose relative has collapsed helps
+nobody.
 
 **Nullable JSONB means SQL NULL.** SQLAlchemy's JSON types write the JSON
 scalar `null` for a Python `None`, which would make `WHERE widgets_json IS

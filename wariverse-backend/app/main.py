@@ -29,10 +29,12 @@ from app.routers import (
     conversation,
     crowd,
     facilities,
+    ivr,
     lost_found,
     routes,
     sos,
     temple,
+    voice,
 )
 from app.services import crowd_simulator
 
@@ -68,11 +70,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     db_ok = await init_db()
     redis_ok = await init_redis()
 
-    if settings.is_production and settings.jwt_secret == "change-me-in-production":
-        log.error("insecure_jwt_secret", detail="JWT_SECRET is still the default value")
-    if settings.is_production and not settings.admin_api_key:
-        log.warning(
-            "admin_api_key_unset", detail="admin endpoints will refuse every request"
+    for problem in settings.insecure_secrets:
+        # Loud in every environment, because a deploy that reaches production
+        # with a default secret is the kind of thing nobody notices until it
+        # matters.
+        (log.error if settings.is_production else log.warning)(
+            "insecure_configuration", detail=problem
         )
 
     # Stands in for the CCTV feed. Runs per process, so keep it on one worker —
@@ -212,5 +215,6 @@ async def readiness() -> ReadinessResponse:
 
 for module in (
     conversation, crowd, facilities, routes, temple, lost_found, sos, auth, admin,
+    ivr, voice,
 ):
     app.include_router(module.router, prefix=settings.api_prefix)

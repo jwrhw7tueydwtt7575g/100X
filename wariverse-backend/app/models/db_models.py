@@ -268,6 +268,11 @@ class SosEvent(Base):
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="PENDING", server_default="PENDING", index=True
     )
+    # Where the emergency came from. A column rather than a note because the
+    # control-room dashboard filters on it — an IVR caller cannot see a screen.
+    channel: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="app", server_default="app"
+    )
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -279,6 +284,7 @@ class SosEvent(Base):
         CheckConstraint(
             "status in ('PENDING', 'ACTIVATED', 'RESOLVED')", name="ck_sos_status"
         ),
+        CheckConstraint("channel in ('app', 'ivr')", name="ck_sos_channel"),
     )
 
 
@@ -303,6 +309,10 @@ class LostFoundReport(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     reporter_phone: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     last_seen_location: Mapped[str | None] = mapped_column(String(255))
+    # Where the reporter last saw them, when the phone could supply it. Far more
+    # actionable for a search party than the free-text location alone.
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
     # The chat session the report came from, so a volunteer can read the

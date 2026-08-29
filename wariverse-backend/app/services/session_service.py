@@ -79,6 +79,8 @@ class SessionState:
     last_intent: str | None = None
     pending_sos: bool = False
     escalation: dict[str, Any] | None = None
+    # IVR call metadata, set when the call ends.
+    call: dict[str, Any] | None = None
     last_lat: float | None = None
     last_lon: float | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
@@ -94,6 +96,7 @@ class SessionState:
             "history": self.messages[-MAX_HISTORY:],
             "pending_sos": self.pending_sos,
             "escalation": self.escalation,
+            "call": self.call,
             "last_intent": self.last_intent,
             "last_location": (
                 {"lat": self.last_lat, "lon": self.last_lon}
@@ -128,6 +131,7 @@ class SessionState:
             last_intent=raw.get("last_intent"),
             pending_sos=bool(raw.get("pending_sos", False)),
             escalation=raw.get("escalation"),
+            call=raw.get("call"),
             last_lat=location.get("lat"),
             last_lon=location.get("lon"),
             messages=list(raw.get("history") or []),
@@ -281,6 +285,16 @@ class SessionService:
         await self.save(state)
         await self._sync_context(state)
 
+    async def finish_call(self, state: SessionState, metadata: dict[str, Any]) -> None:
+        """Close an IVR session, recording how the call ended.
+
+        The transcript is already in `messages` — turns are written as they
+        happen — so this only stores call metadata for the control room.
+        """
+        state.call = metadata
+        await self.save(state)
+        await self._sync_context(state)
+
     async def escalate(self, state: SessionState, reason: str) -> dict[str, Any]:
         """Flag a session for a human volunteer to pick up.
 
@@ -403,6 +417,7 @@ class SessionService:
             last_intent=context.get("last_intent"),
             pending_sos=bool(context.get("pending_sos", False)),
             escalation=context.get("escalation"),
+            call=context.get("call"),
             last_lat=location.get("lat"),
             last_lon=location.get("lon"),
             messages=list(context.get("history") or []),

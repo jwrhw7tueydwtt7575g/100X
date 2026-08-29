@@ -99,6 +99,30 @@ class Schema(BaseModel):
     )
 
 
+def _camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(word.capitalize() for word in rest)
+
+
+class ClientSchema(Schema):
+    """Request base that accepts snake_case or camelCase field names.
+
+    The frontend is TypeScript and may send either; rejecting `isVoice` because
+    the model declares `is_voice` would be a pointless failure. Responses are
+    always serialised snake_case.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        str_strip_whitespace=True,
+        extra="forbid",
+        alias_generator=AliasGenerator(
+            validation_alias=lambda name: AliasChoices(name, _camel(name))
+        ),
+    )
+
+
 class GeoPoint(Schema):
     lat: Latitude
     lon: Longitude
@@ -198,6 +222,43 @@ class ProfileUpdateResponse(Schema):
     user: UserProfile
 
 
+# --- voice ------------------------------------------------------------------
+
+VoiceLanguage = Literal["en", "hi", "mr"]
+
+
+class TranscriptionResponse(Schema):
+    transcript: str
+    language: VoiceLanguage = Field(
+        description="Detected (or hinted) language, so the app can switch to it."
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="Provider confidence. Whisper has none, so it is estimated "
+        "from segment log-probabilities — treat it as a hint, not a measurement.",
+    )
+    # Useful for debugging a bad transcript; harmless for the client to ignore.
+    provider: Literal["deepgram", "whisper"]
+    duration_seconds: float | None = None
+
+
+class SpeakRequest(ClientSchema):
+    text: str = Field(..., min_length=1, examples=["Gate 3 is busy."])
+    language: VoiceLanguage = "en"
+    encoding: Literal["stream", "base64"] = Field(
+        default="stream",
+        description="`stream` returns audio/mpeg; `base64` returns JSON.",
+    )
+
+
+class SpeakBase64Response(Schema):
+    audio_base64: str
+    media_type: str = "audio/mpeg"
+    language: VoiceLanguage
+    cached: bool
+
+
 # --- conversation -----------------------------------------------------------
 
 
@@ -224,30 +285,6 @@ class Widget(Schema):
 
     type: WidgetType
     data: dict[str, Any]
-
-
-def _camel(name: str) -> str:
-    head, *rest = name.split("_")
-    return head + "".join(word.capitalize() for word in rest)
-
-
-class ClientSchema(Schema):
-    """Request base that accepts snake_case or camelCase field names.
-
-    The frontend is TypeScript and may send either; rejecting `isVoice` because
-    the model declares `is_voice` would be a pointless failure. Responses are
-    always serialised snake_case.
-    """
-
-    model_config = ConfigDict(
-        from_attributes=True,
-        populate_by_name=True,
-        str_strip_whitespace=True,
-        extra="forbid",
-        alias_generator=AliasGenerator(
-            validation_alias=lambda name: AliasChoices(name, _camel(name))
-        ),
-    )
 
 
 class ConversationMessageRequest(ClientSchema):
@@ -490,13 +527,15 @@ class LostFoundResponse(Schema):
 # --- sos --------------------------------------------------------------------
 
 
-class SosTriggerRequest(Schema):
-    lat: Latitude
-    lon: Longitude
+class SosTriggerRequest(ClientSchema):
+    session_id: str | None = Field(
+        default=None, max_length=200, examples=["wariverse-session"]
+    )
+    latitude: Latitude
+    longitude: Longitude
+    channel: Channel = "app"
     emergency_type: EmergencyType = "other"
     accuracy_m: float | None = Field(default=None, ge=0, le=10_000)
-    user_id: UUID | None = None
-    session_id: UUID | None = None
     phone: str | None = None
     description: str | None = Field(default=None, max_length=1000)
     language: Language | None = None
@@ -505,6 +544,39 @@ class SosTriggerRequest(Schema):
     @classmethod
     def _phone(cls, v: str | None) -> str | None:
         return _normalise_phone(v) if v else None
+
+
+class SosTriggerResponse(Schema):
+    """What the pilgrim's device gets back, and what the `sos` widget shows."""
+
+    sos_id: UUID
+    status: SosStatus
+    message: str
+    control_room_status: str = Field(examples=["Connected"])
+    timestamp: str = Field(
+        description="Local (IST) clock time, rendered for display.",
+        examples=["10:30 AM"],
+    )
+
+
+class SosStatusUpdate(ClientSchema):
+    status: SosStatus
+    note: str | None = Field(default=None, max_length=500)
+
+
+class SosEventAdmin(Schema):
+    """One event as the control-room dashboard lists it."""
+
+    sos_id: UUID
+    status: SosStatus
+    session_id: UUID | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    channel: Channel
+    notes: str | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    age_minutes: int
 
 
 class SosEventResponse(Schema):

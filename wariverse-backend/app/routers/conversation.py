@@ -41,7 +41,7 @@ from app.services.llm_orchestrator import (
 )
 from app.services.session_service import SessionService, session_key
 from app.services.sos_service import SosService
-from app.utils import now_utc
+from app.utils import format_clock, now_utc
 
 log = structlog.get_logger(__name__)
 
@@ -127,15 +127,9 @@ async def confirm_sos(
     if not payload.confirmed:
         await sessions.set_pending_sos(state, False)
         message = t("sos_cancelled", language)
-        widget = {
-            "type": "sos",
-            "data": {
-                "status": "FAILED",
-                "message": message,
-                "control_room_status": "CANCELLED",
-                "timestamp": now_utc().isoformat(),
-            },
-        }
+        widget = _sos_widget(
+            "FAILED", message, t("control_room_cancelled", language), now_utc()
+        )
         await sessions.record_turn(
             state, "[sos_cancel]", message, intent="sos", widgets=[widget]
         )
@@ -157,6 +151,19 @@ async def confirm_sos(
 
 
 # --- helpers ----------------------------------------------------------------
+
+
+def _sos_widget(status: str, message: str, control_room: str, moment) -> dict:
+    """The `sos` widget, matching domain.ts. `timestamp` is clock time."""
+    return {
+        "type": "sos",
+        "data": {
+            "status": status,
+            "message": message,
+            "control_room_status": control_room,
+            "timestamp": format_clock(moment),
+        },
+    }
 
 
 def _respond(
@@ -197,21 +204,15 @@ async def _activate(
     phone: str | None = None,
     description: str | None = None,
 ) -> ConversationMessageResponse:
-    """Dispatch the emergency and answer with an `sos` widget."""
+    """Step 3 of the widget flow: call the SOS trigger and answer with a card."""
     lat = location.lat if location else state.last_lat
     lon = location.lon if location else state.last_lon
 
     if lat is None or lon is None:
         message = t("sos_no_location", language, helpline=settings.emergency_helpline)
-        widget = {
-            "type": "sos",
-            "data": {
-                "status": "FAILED",
-                "message": message,
-                "control_room_status": "UNREACHABLE",
-                "timestamp": now_utc().isoformat(),
-            },
-        }
+        widget = _sos_widget(
+            "FAILED", message, t("control_room_unreachable", language), now_utc()
+        )
         await sessions.record_turn(
             state, user_text, message, intent="sos", widgets=[widget]
         )
@@ -223,13 +224,14 @@ async def _activate(
         )
         return _respond(state, state.client_key, language, message, [widget])
 
-    event = await sos.dispatch(
-        lat=lat,
-        lon=lon,
+    event = await sos.trigger(
+        latitude=lat,
+        longitude=lon,
+        session_id=state.client_key,
+        channel=state.channel,
         emergency_type=emergency_type,
         language=language,
         user_id=state.user_id,
-        session_id=state.session_id,
         phone=phone,
         description=description,
     )
@@ -238,10 +240,10 @@ async def _activate(
     widget = {
         "type": "sos",
         "data": {
-            "status": "ACTIVATED",
+            "status": event.status,
             "message": event.message,
-            "control_room_status": "NOTIFIED",
-            "timestamp": event.created_at.isoformat(),
+            "control_room_status": event.control_room_status,
+            "timestamp": event.timestamp,
         },
     }
     await sessions.record_turn(
@@ -250,10 +252,9 @@ async def _activate(
     await _remember(state.session_id, user_text, event.message)
 
     log.warning(
-        "sos_activated",
+        "sos_activated_from_chat",
         session_id=state.client_key or str(state.session_id),
         sos_id=str(event.sos_id),
-        eta_minutes=event.eta_minutes,
         request_id=getattr(request.state, "request_id", None),
     )
     return _respond(state, state.client_key, language, event.message, [widget])

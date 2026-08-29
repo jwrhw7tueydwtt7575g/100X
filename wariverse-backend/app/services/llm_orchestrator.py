@@ -50,11 +50,16 @@ from app.models.schemas import GeoPoint
 from app.redis_client import get_redis
 from app.services.crowd_service import CrowdService, ZoneNotFoundError
 from app.services.facility_service import FacilityService
-from app.services.route_service import DestinationNotFoundError, RouteService
+from app.services.route_service import (
+    TEMPLE_LAT,
+    TEMPLE_LON,
+    DestinationNotFoundError,
+    RouteService,
+)
 from app.services.session_service import SessionService, SessionState
 from app.services.sos_service import SosService
 from app.services.temple_service import TempleService
-from app.utils import humanize_age, now_utc
+from app.utils import format_clock, humanize_age, now_utc
 
 log = structlog.get_logger(__name__)
 
@@ -1013,8 +1018,8 @@ class LLMOrchestrator:
                     "message": t(
                         "sos_no_location", language, helpline=settings.emergency_helpline
                     ),
-                    "control_room_status": "UNREACHABLE",
-                    "timestamp": now_utc().isoformat(),
+                    "control_room_status": t("control_room_unreachable", language),
+                    "timestamp": format_clock(),
                 },
             }
             return ToolOutcome(
@@ -1037,8 +1042,8 @@ class LLMOrchestrator:
                 "message": t(
                     "sos_confirm_prompt", language, helpline=settings.emergency_helpline
                 ),
-                "control_room_status": "STANDING_BY",
-                "timestamp": now_utc().isoformat(),
+                "control_room_status": t("control_room_standing_by", language),
+                "timestamp": format_clock(),
             },
         }
         return ToolOutcome(
@@ -1110,6 +1115,18 @@ class LLMOrchestrator:
                 "lat": point.lat if point else None,
                 "lng": point.lon if point else None,
                 "category": category_from_text(text),
+            }
+        elif intent == "route":
+            tool = "get_route_guidance"
+            # No destination given, so head for the temple — which is where a
+            # pilgrim asking for directions is almost always going.
+            destination = zone_from_text(text)
+            target = ZONES_BY_ID.get(destination or "", {})
+            args = {
+                "origin_lat": point.lat if point else None,
+                "origin_lng": point.lon if point else None,
+                "dest_lat": target.get("lat", TEMPLE_LAT),
+                "dest_lng": target.get("lon", TEMPLE_LON),
             }
         elif intent == "temple":
             tool = "get_temple_info"

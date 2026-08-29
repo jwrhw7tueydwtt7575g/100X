@@ -76,6 +76,23 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
               "arrival in about {eta} minutes. Stay where you are — you can also call "
               "{helpline}.",
     },
+    "sos_activated": {
+        "mr": "मदत मागवली आहे. शांत राहा. स्वयंसेवकाला कळवले जात आहे.",
+        "hi": "मदद मांगी गई है। शांत रहें। स्वयंसेवक को सूचित किया जा रहा है।",
+        "en": "Help has been requested. Stay calm. A volunteer is being notified.",
+    },
+    "control_room_connected": {
+        "mr": "जोडलेले", "hi": "जुड़ा हुआ", "en": "Connected",
+    },
+    "control_room_standing_by": {
+        "mr": "तयार", "hi": "तैयार", "en": "Standing by",
+    },
+    "control_room_unreachable": {
+        "mr": "संपर्क होत नाही", "hi": "संपर्क नहीं", "en": "Unreachable",
+    },
+    "control_room_cancelled": {
+        "mr": "रद्द", "hi": "रद्द", "en": "Cancelled",
+    },
     "sos_cancelled": {
         "mr": "ठीक आहे, आपत्कालीन विनंती रद्द केली. गरज पडल्यास पुन्हा सांगा.",
         "hi": "ठीक है, आपातकालीन अनुरोध रद्द कर दिया गया। ज़रूरत हो तो फिर बताएँ।",
@@ -257,6 +274,55 @@ PHRASES: Final[dict[str, dict[str, str]]] = {
               "{helpline} पर कॉल करें।",
         "en": "The volunteer desk is closed right now (open 5am-11pm). If it's urgent, "
               "call {helpline}.",
+    },
+    # --- IVR (spoken: keep sentences short and free of digits/markup) -------
+    "ivr_language_prompt": {
+        "mr": "वारीव्हर्समध्ये आपले स्वागत आहे. मराठीसाठी एक दाबा.",
+        "hi": "वारीवर्स में आपका स्वागत है। हिंदी के लिए दो दबाएं।",
+        "en": "Welcome to WariVerse. For English, press three.",
+    },
+    "ivr_ask_question": {
+        "mr": "आपला प्रश्न सांगा. आपत्कालीन मदतीसाठी नऊ दाबा.",
+        "hi": "अपना सवाल बोलिए। आपात मदद के लिए नौ दबाएं।",
+        "en": "Please say your question. For emergency help, press nine.",
+    },
+    "ivr_anything_else": {
+        "mr": "आणखी काही विचारायचे आहे का?",
+        "hi": "और कुछ पूछना है?",
+        "en": "Is there anything else?",
+    },
+    "ivr_no_input": {
+        "mr": "मला काही ऐकू आले नाही. कृपया पुन्हा सांगा.",
+        "hi": "मुझे कुछ सुनाई नहीं दिया। कृपया दोबारा बोलिए।",
+        "en": "I did not hear anything. Please say that again.",
+    },
+    "ivr_goodbye": {
+        "mr": "धन्यवाद. राम कृष्ण हरी.",
+        "hi": "धन्यवाद। राम कृष्ण हरी।",
+        "en": "Thank you. Ram Krishna Hari.",
+    },
+    "ivr_error": {
+        "mr": "क्षमा करा, तांत्रिक अडचण आली आहे. आपत्कालीन मदतीसाठी एक एक दोन वर कॉल करा.",
+        "hi": "क्षमा करें, तकनीकी दिक्कत है। आपात मदद के लिए एक एक दो पर कॉल करें।",
+        "en": "Sorry, there is a technical problem. For emergency help call one one two.",
+    },
+    "ivr_where_are_you": {
+        "mr": "आपण कोणत्या दरवाजाजवळ किंवा घाटाजवळ आहात ते सांगा.",
+        "hi": "आप किस द्वार या घाट के पास हैं, बताइए।",
+        "en": "Please say which gate or ghat you are near.",
+    },
+    "ivr_escalation_hold": {
+        "mr": "कृपया थांबा. मी स्वयंसेवकाला जोडत आहे.",
+        "hi": "कृपया रुकिए। मैं स्वयंसेवक से जोड़ रहा हूँ।",
+        "en": "Please hold. I am connecting you to a volunteer.",
+    },
+    "ivr_sos_no_location": {
+        "mr": "मदत मागवली आहे. आपले ठिकाण माहीत नाही, त्यामुळे नियंत्रण कक्ष याच "
+              "क्रमांकावर परत कॉल करेल. फोन सुरू ठेवा.",
+        "hi": "मदद मांगी गई है। आपका स्थान ज्ञात नहीं है, इसलिए नियंत्रण कक्ष इसी "
+              "नंबर पर वापस कॉल करेगा। फोन चालू रखें।",
+        "en": "Help has been requested. Your location is not known, so the control "
+              "room will call you back on this number. Please keep your phone on.",
     },
     # --- auth --------------------------------------------------------------
     "otp_sent": {

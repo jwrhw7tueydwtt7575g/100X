@@ -33,6 +33,22 @@ os.environ.update(
         "OTP_DEBUG_ECHO": "true",
         "SMS_PROVIDER": "console",
         "DEFAULT_LANGUAGE": "mr",
+        # Explicitly blank every credential the suite asserts on. Settings also
+        # reads `.env`, so without this a developer who has a real ADMIN_API_KEY
+        # or TWILIO_AUTH_TOKEN locally would see the "fails closed when
+        # unconfigured" tests turn into 401s. Tests must not depend on whose
+        # machine they run on.
+        "ADMIN_API_KEY": "",
+        "TWILIO_AUTH_TOKEN": "",
+        "TWILIO_ACCOUNT_SID": "",
+        "TWILIO_PHONE_NUMBER": "",
+        "CONTROL_ROOM_PHONE": "",
+        "DEEPGRAM_API_KEY": "",
+        "ELEVENLABS_API_KEY": "",
+        "GOOGLE_TTS_API_KEY": "",
+        "GOOGLE_APPLICATION_CREDENTIALS": "",
+        "IVR_PUBLIC_BASE_URL": "",
+        "CROWD_SIMULATOR_ENABLED": "false",
         # Unreachable by default — port 1 is never listening.
         "DATABASE_URL": INTEGRATION_DB_URL
         or "postgresql+asyncpg://test:test@127.0.0.1:1/wariverse_test",

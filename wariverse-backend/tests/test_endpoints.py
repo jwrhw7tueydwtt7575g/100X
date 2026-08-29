@@ -19,24 +19,7 @@ from tests.conftest import TEMPLE_LAT, TEMPLE_LON
 # --- sos --------------------------------------------------------------------
 
 
-async def test_sos_trigger_is_open_to_unauthenticated_pilgrims(client: AsyncClient) -> None:
-    response = await client.post(
-        "/api/sos/trigger",
-        json={
-            "lat": TEMPLE_LAT,
-            "lon": TEMPLE_LON,
-            "emergency_type": "medical",
-            "language": "mr",
-        },
-    )
-    assert response.status_code == 201
-
-    body = response.json()
-    assert body["status"] == "ACTIVATED"
-    assert body["dispatched_to"]
-    assert body["session_id"]  # anonymous panic press still gets a session
-    assert body["helpline_numbers"][0] == "112"
-    assert body["nearest_facility"]["category"] in ("medical", "police")
+# SOS lives in tests/test_sos.py and tests/test_sos_integration.py.
 
 
 # Auth lives in tests/test_auth.py and tests/test_auth_integration.py.

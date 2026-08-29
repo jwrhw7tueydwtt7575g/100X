@@ -157,6 +157,45 @@ async def test_facility_widget_shape(client: AsyncClient) -> None:
     assert "km" in data["distance"] or "m" in data["distance"]
 
 
+async def test_route_question_returns_a_route_widget(client: AsyncClient) -> None:
+    """Directions must work without the LLM.
+
+    The keyword router classified `route` but had no branch for it, so this
+    answered "I didn't quite catch that" while the route tool worked fine.
+    """
+    body = await send(
+        client,
+        message="show me the route to the temple",
+        language="en",
+        latitude=17.6790,
+        longitude=75.3245,
+    )
+    assert widget_types(body) == ["route_guidance"]
+    data = body["widgets"][0]["data"]
+    assert set(data) == {
+        "origin",
+        "destination",
+        "route_coordinates",
+        "estimated_time",
+        "distance",
+        "avoid_areas",
+    }
+    assert data["estimated_time"].endswith("walk")
+
+
+async def test_route_question_without_location_asks_for_it(client: AsyncClient) -> None:
+    # Its own session: the shared one may already have a location pinned by an
+    # earlier test, which would satisfy the request and hide the behaviour.
+    body = await send(
+        client,
+        message="how do I get to the temple?",
+        language="en",
+        session_id="route-no-location",
+    )
+    assert body["widgets"] == []
+    assert "location" in body["response_text"].lower()
+
+
 async def test_temple_widget_shape(client: AsyncClient) -> None:
     body = await send(client, message="darshan timings?", language="en")
     assert widget_types(body) == ["temple_info"]
@@ -224,8 +263,13 @@ async def test_confirm_endpoint_returns_an_activated_sos_widget(
         "widgets",
     }
     assert widget_types(body) == ["sos"]
-    assert body["widgets"][0]["data"]["status"] == "ACTIVATED"
-    assert body["widgets"][0]["data"]["control_room_status"] == "NOTIFIED"
+    data = body["widgets"][0]["data"]
+    assert data["status"] == "ACTIVATED"
+    # No Redis in this suite, so the dashboard was not reached — the card says
+    # "Standing by" rather than claiming a connection that does not exist.
+    assert data["control_room_status"] == "Standing by"
+    # Clock time the pilgrim can read, not an ISO timestamp.
+    assert data["timestamp"].endswith(("AM", "PM"))
 
 
 async def test_confirm_uses_the_location_remembered_from_the_chat(
@@ -260,7 +304,7 @@ async def test_confirm_without_any_known_location_fails_loudly(
 
     data = body["widgets"][0]["data"]
     assert data["status"] == "FAILED"
-    assert data["control_room_status"] == "UNREACHABLE"
+    assert data["control_room_status"] == "Unreachable"
     # An emergency that cannot be dispatched must still surface the number.
     assert "112" in body["response_text"]
 
@@ -279,7 +323,7 @@ async def test_confirm_can_cancel(client: AsyncClient) -> None:
         )
     ).json()
     assert body["widgets"][0]["data"]["status"] == "FAILED"
-    assert body["widgets"][0]["data"]["control_room_status"] == "CANCELLED"
+    assert body["widgets"][0]["data"]["control_room_status"] == "Cancelled"
 
 
 async def test_yes_in_chat_activates_a_pending_sos(client: AsyncClient) -> None:

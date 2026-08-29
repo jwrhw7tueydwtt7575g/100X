@@ -72,6 +72,18 @@ def humanize_age(moment: datetime, language: str = "en", now: datetime | None = 
     return words["day"].format(n=seconds // 86_400)
 
 
+def format_clock(moment: datetime | None = None) -> str:
+    """`10:30 AM` in IST — what a responder reads off a dashboard.
+
+    Deliberately not localized: an emergency timestamp is read by the control
+    room and by responders coordinating in mixed languages, and a single
+    unambiguous rendering matters more than translation here.
+    """
+    local = (moment or now_utc()).astimezone(IST)
+    hour = local.hour % 12 or 12
+    return f"{hour}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+
+
 def parse_hhmm(value: str | None) -> time | None:
     if not value:
         return None

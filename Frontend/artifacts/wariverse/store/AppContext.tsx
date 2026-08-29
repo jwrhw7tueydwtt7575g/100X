@@ -1,27 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import { getCopy } from '@/constants/copy';
+import { conversationApi, DEFAULT_SESSION_ID } from '@/services/api';
 import { mockConversationApi } from '@/services/mockApi';
 import { speechService, textToSpeechService } from '@/services/speechService';
 import type { ConversationResponse, Language, LocationState, Message, User } from '@/types/domain';
-
-function getApiUrl(): string {
-  if (process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL;
-  }
-  const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest2?.extra?.expoGo?.debuggerHost;
-  if (hostUri) {
-    const hostIp = hostUri.split(':')[0];
-    if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
-      return `http://${hostIp}:8000/api`;
-    }
-  }
-  return 'http://localhost:8000/api';
-}
 
 type AppContextValue = {
   language: Language;
@@ -161,32 +147,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       try {
         let response: ConversationResponse | null = null;
-        const apiUrl = getApiUrl();
         try {
-          const res = await fetch(`${apiUrl}/conversation/message`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              session_id: sessionId,
-              language,
-              message: text.trim(),
-              latitude: currentLat,
-              longitude: currentLng,
-              is_voice: isVoice,
-            }),
+          response = await conversationApi.sendMessage({
+            sessionId,
+            language,
+            message: text.trim(),
+            isVoice,
+            latitude: currentLat,
+            longitude: currentLng,
           });
-          if (res.ok) {
-            const data = await res.json();
-            response = {
-              sessionId: data.session_id,
-              messageId: data.message_id,
-              language: data.language,
-              responseText: data.response_text,
-              widgets: data.widgets,
-            };
-          }
         } catch {
-          // Backend unreachable or offline, will fallback to local response generator
+          // Backend unreachable or offline; fall back to the local generator so
+          // a pilgrim with no signal still gets something useful.
         }
 
         if (!response) {
@@ -208,7 +180,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const confirmSOS = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await mockConversationApi.confirmSOS(language);
+      let response: ConversationResponse;
+      try {
+        response = await conversationApi.confirmSOS(language, DEFAULT_SESSION_ID);
+      } catch {
+        // An emergency must still acknowledge on-screen when the network is
+        // down — the pilgrim also needs to see the helpline number.
+        response = await mockConversationApi.confirmSOS(language);
+      }
       setMessages((current) => [...current, { id: response.messageId, role: 'assistant', text: response.responseText, timestamp: new Date().toISOString(), language, widgets: response.widgets }]);
       return response;
     } catch {

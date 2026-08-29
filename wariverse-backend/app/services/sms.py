@@ -32,6 +32,36 @@ def otp_message(code: str, minutes: int) -> str:
     )
 
 
+async def send_control_room_alert(
+    phone_number: str,
+    *,
+    sos_id: str,
+    emergency_type: str,
+    latitude: float,
+    longitude: float,
+    nearest: str,
+) -> bool:
+    """Text the control room about a new emergency.
+
+    Coordinates are included as a maps link because a responder reading this on
+    a phone needs to navigate, not transcribe numbers.
+    """
+    message = (
+        f"WariVerse SOS {sos_id[:8]} · {emergency_type}\n"
+        f"Location: https://maps.google.com/?q={latitude},{longitude}\n"
+        f"Nearest post: {nearest}"
+    )
+    provider = settings.sms_provider.lower()
+
+    if provider == "fast2sms":
+        # The OTP route renders a fixed template, so free text needs the `q`
+        # (quick/transactional) route instead.
+        return await _send_fast2sms_text(phone_number, message)
+    if provider == "twilio":
+        return await _send_twilio(phone_number, message)
+    return _send_console(phone_number, sos_id, message)
+
+
 async def send_otp_sms(phone_number: str, code: str) -> bool:
     """Deliver an OTP. Returns True when the provider accepted it."""
     minutes = max(1, settings.otp_ttl_seconds // 60)
@@ -102,11 +132,44 @@ async def _send_fast2sms(phone_number: str, code: str) -> bool:
         return False
 
 
+async def _send_fast2sms_text(phone_number: str, message: str) -> bool:
+    """Free-text message over Fast2SMS's transactional route."""
+    if not settings.fast2sms_api_key:
+        log.error("fast2sms_not_configured", detail="FAST2SMS_API_KEY is unset")
+        return False
+
+    national = phone_number.removeprefix("+91")
+    try:
+        async with httpx.AsyncClient(timeout=settings.sms_timeout_seconds) as client:
+            response = await client.post(
+                FAST2SMS_URL,
+                headers={"authorization": settings.fast2sms_api_key},
+                json={
+                    "route": "q",
+                    "message": message,
+                    "numbers": national,
+                    "flash": 0,
+                },
+            )
+        ok = response.status_code == 200 and response.json().get("return") is True
+        if not ok:
+            log.error(
+                "fast2sms_text_failed",
+                phone=_mask(phone_number),
+                status_code=response.status_code,
+                body=response.text[:200],
+            )
+        return ok
+    except (httpx.HTTPError, ValueError) as exc:
+        log.error("fast2sms_text_error", phone=_mask(phone_number), error=str(exc))
+        return False
+
+
 async def _send_twilio(phone_number: str, message: str) -> bool:
     if not (
         settings.twilio_account_sid
         and settings.twilio_auth_token
-        and settings.twilio_from_number
+        and settings.twilio_phone_number
     ):
         log.error("twilio_not_configured")
         return False
@@ -117,7 +180,7 @@ async def _send_twilio(phone_number: str, message: str) -> bool:
                 TWILIO_URL.format(sid=settings.twilio_account_sid),
                 auth=(settings.twilio_account_sid, settings.twilio_auth_token),
                 data={
-                    "From": settings.twilio_from_number,
+                    "From": settings.twilio_phone_number,
                     "To": phone_number,
                     "Body": message,
                 },

@@ -12,19 +12,27 @@ import hmac
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.config import settings
 from app.data.reference import ZONES_BY_ID
-from app.deps import DbSession, Language, get_crowd_service, get_temple_service
+from app.deps import (
+    DbSession,
+    Language,
+    get_crowd_service,
+    get_sos_service,
+    get_temple_service,
+)
 from app.models.schemas import (
     AdminCrowdUpdate,
     CrowdResponse,
+    SosEventAdmin,
     TempleInfoResponse,
     TempleInfoUpdate,
 )
 from app.routers.crowd import ZoneId, _to_response
 from app.services.crowd_service import CrowdService, ZoneNotFoundError
+from app.services.sos_service import SosService
 from app.services.temple_service import TempleService
 
 log = structlog.get_logger(__name__)
@@ -97,6 +105,34 @@ async def update_crowd(
         source=payload.source,
     )
     return _to_response(reading, language)
+
+
+@router.get(
+    "/sos/active",
+    response_model=list[SosEventAdmin],
+    summary="Every unresolved emergency, newest first",
+    responses={
+        401: {"description": "Invalid or missing X-API-Key"},
+        503: {"description": "ADMIN_API_KEY unset, or the store is unavailable"},
+    },
+)
+async def list_active_sos(
+    sos: Annotated[SosService, Depends(get_sos_service)],
+    db: DbSession,
+    _: ApiKey,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[SosEventAdmin]:
+    """The dashboard's poll endpoint.
+
+    Reads Postgres, so it lists emergencies even when the `sos:new` pub/sub
+    push failed — which is why a failed publish does not block activation.
+    """
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="sos store unavailable; please retry shortly",
+        )
+    return await sos.list_active(limit=limit)
 
 
 @router.put(
