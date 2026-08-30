@@ -29,9 +29,14 @@ Language = Literal["mr", "hi", "en", "kn", "te"]
 DensityLevel = Literal["LOW", "MODERATE", "HIGH", "VERY_HIGH"]
 Trend = Literal["rising", "steady", "falling"]
 # What `/api/facilities/nearby` exposes.
-FacilityCategory = Literal["medical", "water", "toilet", "rest", "food", "accommodation"]
-# Internal types, a superset: SOS routes responders to police and lost & found
-# desks, which pilgrims never search for by category.
+# `police` is requestable but not a default: a pilgrim asking "where can I get
+# water" should not be handed a police post, yet the live map wants to show them
+# as safety landmarks, so it asks for the category explicitly.
+FacilityCategory = Literal[
+    "medical", "water", "toilet", "rest", "food", "accommodation", "police"
+]
+# Internal types, a superset: SOS also routes responders to lost & found desks,
+# which pilgrims never search for by category.
 FacilityType = Literal[
     "medical", "water", "toilet", "rest", "food", "accommodation",
     "police", "lost_found_desk",

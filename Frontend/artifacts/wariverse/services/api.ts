@@ -121,9 +121,111 @@ async function request<T>(
   }
 }
 
+type QueryValue = string | number | undefined | (string | number)[];
+
+async function getJson<T>(path: string, params: Record<string, QueryValue> = {}): Promise<T> {
+  const pairs: string[] = [];
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    // FastAPI reads repeated keys as a list, which is how `category` asks for
+    // several facility types at once.
+    for (const item of Array.isArray(value) ? value : [value]) {
+      pairs.push(`${key}=${encodeURIComponent(String(item))}`);
+    }
+  }
+  const query = pairs.join('&');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(
+      `${getApiBaseUrl()}${path}${query ? `?${query}` : ''}`,
+      { signal: controller.signal }
+    );
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new ApiError(
+        payload?.error?.message ?? `Request failed with status ${response.status}`,
+        response.status,
+        payload?.request_id
+      );
+    }
+    return camelizeKeys<T>(payload);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* endpoints                                                                   */
 /* -------------------------------------------------------------------------- */
+
+export type CrowdZoneReading = {
+  zoneId: string;
+  zoneName: string;
+  density: number;
+  status: 'LOW' | 'MODERATE' | 'HIGH' | 'VERY_HIGH';
+  latitude?: number | null;
+  longitude?: number | null;
+  waitMinutes?: number | null;
+  updatedAt?: string;
+  recommendation?: string | null;
+};
+
+export type NearbyFacility = {
+  id?: string;
+  name: string;
+  category: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  distance?: string;
+  distanceM?: number;
+  availability?: string;
+  contact?: string;
+  phone?: string;
+  isSeva?: boolean;
+  providerName?: string;
+};
+
+export const crowdApi = {
+  /** Live density for every zone. Drives the map's colour-coded pins. */
+  async all(language: Language = 'en'): Promise<CrowdZoneReading[]> {
+    const payload = await getJson<{ zones?: CrowdZoneReading[] } | CrowdZoneReading[]>(
+      '/api/crowd/all',
+      { language }
+    );
+    return Array.isArray(payload) ? payload : (payload.zones ?? []);
+  },
+};
+
+export const facilitiesApi = {
+  /**
+   * Facilities around a point. `radiusM` defaults to the 10 km the map uses —
+   * wide enough to cover the whole Pandharpur approach, where a pilgrim two
+   * villages out still needs to see the medical post ahead of them.
+   */
+  async nearby(input: {
+    latitude: number;
+    longitude: number;
+    radiusM?: number;
+    category?: string[];
+    limit?: number;
+    language?: Language;
+  }): Promise<NearbyFacility[]> {
+    const payload = await getJson<{ facilities?: NearbyFacility[] } | NearbyFacility[]>(
+      '/api/facilities/nearby',
+      {
+        lat: input.latitude,
+        lng: input.longitude,
+        radius_m: input.radiusM ?? 10_000,
+        category: input.category,
+        limit: input.limit ?? 50,
+        language: input.language ?? 'en',
+      }
+    );
+    return Array.isArray(payload) ? payload : (payload.facilities ?? []);
+  },
+};
 
 export const conversationApi = {
   async sendMessage(

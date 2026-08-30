@@ -148,47 +148,120 @@ export const speechService: SpeechService = {
   },
 };
 
+/* -------------------------------------------------------------------------- */
+/* text to speech                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Reading text aloud, on every platform.
+ *
+ * This used to open with `if (typeof window === 'undefined') return`, which is
+ * true on a physical iOS/Android device — so the app said nothing at all on the
+ * hardware pilgrims actually carry, and only ever worked in a browser. It then
+ * reached for `new Audio(...)`, which React Native does not have either.
+ *
+ * Two layers, in order:
+ *
+ *   1. **Server audio.** `GET /api/voice/speak` streams an OpenAI `tts-1` MP3.
+ *      This is the good voice, and it is cached server-side, so a repeated
+ *      prompt costs nothing. Web only, because playing a URL on native needs
+ *      `expo-av`, which is not installed (see services/ivrAudio.ts).
+ *   2. **The device's own voice**, via `expo-speech` — which works on iOS,
+ *      Android *and* web. Robotic next to `tts-1`, but it is the layer that
+ *      guarantees a pilgrim is never met with silence.
+ */
+
 let activeAudioElement: HTMLAudioElement | null = null;
+
+const isWeb = typeof window !== 'undefined' && typeof document !== 'undefined';
+
+/** Speak through the device. Resolves once speaking has finished or failed. */
+export async function speakOnDevice(text: string, language: Language): Promise<boolean> {
+  const spoken = text.trim();
+  if (!spoken) return false;
+
+  try {
+    const Speech = await import('expo-speech');
+    await new Promise<void>((resolve) => {
+      Speech.speak(spoken, {
+        language: languageTag[language] || 'en-IN',
+        // Slightly under natural pace: this is read to someone walking in a
+        // crowd, often in their second language.
+        rate: 0.95,
+        onDone: () => resolve(),
+        onStopped: () => resolve(),
+        onError: () => resolve(),
+      });
+    });
+    return true;
+  } catch (error) {
+    console.warn('[tts] expo-speech unavailable', error);
+  }
+
+  // Last resort for a browser where expo-speech failed to load.
+  if (isWeb && 'speechSynthesis' in window) {
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    utterance.lang = languageTag[language] || 'en-IN';
+    window.speechSynthesis.speak(utterance);
+    return true;
+  }
+  return false;
+}
+
+/** Silence whatever is currently being said, on any platform. */
+export async function stopSpeaking(): Promise<void> {
+  if (activeAudioElement) {
+    try {
+      activeAudioElement.pause();
+    } catch {
+      // Already detached.
+    }
+    activeAudioElement = null;
+  }
+  try {
+    const Speech = await import('expo-speech');
+    Speech.stop();
+  } catch {
+    // Not loadable here; the web branch below still applies.
+  }
+  if (isWeb && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+/** The server's MP3 for this text, or null if it could not be played. */
+async function playServerAudio(text: string, language: Language): Promise<boolean> {
+  if (!isWeb || typeof Audio === 'undefined') return false;
+
+  const url =
+    `${getApiBaseUrl()}/api/voice/speak` +
+    `?text=${encodeURIComponent(text)}&language=${encodeURIComponent(language)}`;
+
+  try {
+    const audio = new Audio(url);
+    activeAudioElement = audio;
+    // `play()` rejects on autoplay policy and on a non-audio response (a 503
+    // when no key is configured), which is exactly when we want the fallback.
+    await audio.play();
+    return true;
+  } catch (error) {
+    console.warn('[tts] server audio unavailable, using the device voice', error);
+    activeAudioElement = null;
+    return false;
+  }
+}
 
 export const textToSpeechService: TextToSpeechService = {
   async speak(text: string, language: Language) {
-    if (typeof window === 'undefined') return;
+    const spoken = (text ?? '').trim();
+    if (!spoken) return;
 
-    if (activeAudioElement) {
-      activeAudioElement.pause();
-      activeAudioElement = null;
-    }
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-
-    if (text && text.trim()) {
-      try {
-        const audioUrl = `${getApiBaseUrl()}/api/voice/speak?text=${encodeURIComponent(text.trim())}&language=${encodeURIComponent(language)}`;
-        const audio = new Audio(audioUrl);
-        activeAudioElement = audio;
-        await audio.play();
-        return;
-      } catch (err) {
-        console.warn('Backend ElevenLabs/Google TTS playback failed, falling back to Web SpeechSynthesis:', err);
-      }
-    }
-
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = languageTag[language] || 'en-IN';
-      window.speechSynthesis.speak(utterance);
-    }
+    await stopSpeaking();
+    if (await playServerAudio(spoken, language)) return;
+    await speakOnDevice(spoken, language);
   },
+
   async stop() {
-    if (typeof window !== 'undefined') {
-      if (activeAudioElement) {
-        activeAudioElement.pause();
-        activeAudioElement = null;
-      }
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    }
+    await stopSpeaking();
   },
 };

@@ -105,7 +105,7 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
         setCallState('ended');
         return;
       }
-      if (!next.audioBase64 || muted) {
+      if (muted) {
         setCallState('connected');
         return;
       }
@@ -114,7 +114,15 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
       // Queued rather than played directly: a turn that arrives while the
       // previous prompt is still speaking waits its place instead of cutting
       // the caller off mid-sentence.
-      await enqueuePlayback(next.audioBase64, next.mediaType, { speaker });
+      //
+      // The prompt text goes along with the audio so that a device which cannot
+      // play the MP3 — or a backend with no OpenAI key, which sends no audio at
+      // all — still reads the menu out loud instead of going quiet.
+      await enqueuePlayback(next.audioBase64, next.mediaType, {
+        speaker,
+        text: next.prompt,
+        language: next.language,
+      });
       if (mounted.current && seq === turnSeq.current) setCallState('connected');
     },
     [muted, speaker]

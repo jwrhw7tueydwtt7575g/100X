@@ -299,7 +299,7 @@ class FacilityService:
             return []
 
         results: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(verify=False, timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             for category_type, sub_categories in categories_to_query:
                 cat_results: list[dict[str, Any]] = []
                 for sub_cat in sub_categories:

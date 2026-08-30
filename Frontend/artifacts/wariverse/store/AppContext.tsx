@@ -7,6 +7,7 @@ import { getCopy } from '@/constants/copy';
 import { authApi, conversationApi, DEFAULT_SESSION_ID } from '@/services/api';
 import { mockConversationApi } from '@/services/mockApi';
 import { speechService, textToSpeechService } from '@/services/speechService';
+import { LOCATION_TIMEOUT_MS, PANDHARPUR_TEMPLE } from '@/constants/geo';
 import type { ConversationResponse, Language, LocationState, Message, User } from '@/types/domain';
 
 type AppContextValue = {
@@ -248,30 +249,101 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await speechService.cancelRecording();
   }, []);
 
+  /**
+   * Get a real fix, or fall back to the temple.
+   *
+   * The map and every "what is near me" query need *some* coordinate to work
+   * with. When the phone cannot give one — permission refused, location
+   * services off, no fix indoors — falling back to Pandharpur keeps the app
+   * useful, and `isFallback` lets the UI say so rather than drawing a "you are
+   * here" dot on a place the pilgrim is not.
+   */
   const requestLocation = useCallback(async () => {
+    const useTemple = (permission: LocationState['permission']) =>
+      setLocation({
+        latitude: PANDHARPUR_TEMPLE.latitude,
+        longitude: PANDHARPUR_TEMPLE.longitude,
+        permission,
+        isFallback: true,
+      });
+
     if (Platform.OS === 'web') {
-      if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        // Previously reported `granted` with null coordinates, so the UI showed
+        // "You are here" pointing at nowhere.
+        useTemple('denied');
+        return;
+      }
+      await new Promise<void>((resolve) => {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
-            setLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, permission: 'granted' });
+            setLocation({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              permission: 'granted',
+              isFallback: false,
+            });
+            resolve();
           },
           () => {
-            setLocation((current) => ({ ...current, permission: 'denied' }));
+            useTemple('denied');
+            resolve();
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: LOCATION_TIMEOUT_MS,
+            maximumAge: 30_000,
           }
         );
-      } else {
-        setLocation((current) => ({ ...current, permission: 'granted' }));
+      });
+      return;
+    }
+
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        useTemple('denied');
+        Alert.alert(appCopy.location, appCopy.locationDenied);
+        return;
       }
-      return;
+
+      // A cached fix puts a pin on the map immediately; the high-accuracy read
+      // below replaces it a moment later. Without this the map sits on the
+      // temple for several seconds even when the phone knows better.
+      const known = await Location.getLastKnownPositionAsync({ maxAge: 60_000 });
+      if (known) {
+        setLocation({
+          latitude: known.coords.latitude,
+          longitude: known.coords.longitude,
+          permission: 'granted',
+          isFallback: false,
+        });
+      }
+
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      setLocation({
+        latitude: current.coords.latitude,
+        longitude: current.coords.longitude,
+        permission: 'granted',
+        isFallback: false,
+      });
+    } catch (error) {
+      // Location services switched off, or no fix indoors. This used to reject
+      // unhandled and leave permission stuck on 'unknown' forever.
+      console.warn('[location] could not get a fix, using Pandharpur', error);
+      setLocation((existing) =>
+        existing.latitude !== null && !existing.isFallback
+          ? existing // A good fix from earlier beats the temple.
+          : {
+              latitude: PANDHARPUR_TEMPLE.latitude,
+              longitude: PANDHARPUR_TEMPLE.longitude,
+              permission: existing.permission === 'granted' ? 'granted' : 'denied',
+              isFallback: true,
+            }
+      );
     }
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (permission.status !== 'granted') {
-      setLocation((current) => ({ ...current, permission: 'denied' }));
-      Alert.alert(appCopy.location, appCopy.locationDenied);
-      return;
-    }
-    const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-    setLocation({ latitude: current.coords.latitude, longitude: current.coords.longitude, permission: 'granted' });
   }, [appCopy.location, appCopy.locationDenied]);
 
   const clearConversation = useCallback(async () => {

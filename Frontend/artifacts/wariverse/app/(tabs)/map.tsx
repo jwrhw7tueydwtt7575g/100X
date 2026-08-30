@@ -99,7 +99,9 @@ export default function MapScreen() {
           </View>
         </View>
       )}
-      <Text style={styles.disclaimer}>Live Mapbox navigation · updated just now</Text>
+      <Text style={styles.disclaimer}>
+        Live crowd and facilities · refreshed every minute
+      </Text>
     </View>
   );
 }

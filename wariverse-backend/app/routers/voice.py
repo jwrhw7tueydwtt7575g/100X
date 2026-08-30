@@ -14,7 +14,16 @@ import base64
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
@@ -22,6 +31,7 @@ from app.models.schemas import (
     SpeakBase64Response,
     SpeakRequest,
     TranscriptionResponse,
+    VoiceLanguage,
 )
 from app.services import stt, tts
 
@@ -141,20 +151,20 @@ async def speak(payload: SpeakRequest):
                 f"{settings.tts_max_characters}"
             ),
         )
-    if not tts.is_configured(payload.language):
+    if not tts.active_is_configured(payload.language):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 f"no speech provider configured for {payload.language} "
-                f"({tts.provider_for(payload.language)})"
+                f"({tts.active_provider(payload.language)})"
             ),
         )
 
-    was_cached = await tts.cached(text, payload.language) is not None
+    was_cached = await tts.cached_active(text, payload.language) is not None
 
     if payload.encoding == "base64":
         try:
-            audio = await tts.synthesize_bytes(text, payload.language)
+            audio = await tts.synthesize_active_bytes(text, payload.language)
         except tts.SynthesisError as exc:
             raise _unavailable(exc) from exc
         # An explicit JSONResponse, because the route's response_class is
@@ -168,13 +178,28 @@ async def speak(payload: SpeakRequest):
             ).model_dump(mode="json")
         )
 
+    # Pull the first chunk *before* returning, so a provider failure is still a
+    # 503 the client can act on. Streaming straight out meant a 429 or an outage
+    # produced `200 OK` with an empty body — the app played nothing, believed it
+    # had succeeded, and never fell back to the device's own voice. Silence that
+    # reports success is the worst possible failure for a voice interface.
+    source = tts.synthesize_active(text, payload.language)
+    try:
+        first = await anext(source, b"")
+    except tts.SynthesisError as exc:
+        raise _unavailable(exc) from exc
+
+    if not first:
+        raise _unavailable(tts.SynthesisError("the speech provider returned no audio"))
+
     async def stream():
+        yield first
         try:
-            async for chunk in tts.synthesize(text, payload.language):
+            async for chunk in source:
                 yield chunk
         except tts.SynthesisError as exc:
-            # The response has already begun, so the status code is committed.
-            # Truncating is the only remaining signal; log loudly.
+            # Past this point the status is committed and some audio has already
+            # been sent; truncating is the only remaining signal.
             log.error("tts_stream_failed", language=payload.language, error=str(exc))
 
     return StreamingResponse(
@@ -182,10 +207,37 @@ async def speak(payload: SpeakRequest):
         media_type=tts.MEDIA_TYPE,
         headers={
             "Cache-Control": f"private, max-age={settings.tts_cache_ttl_seconds}",
-            "X-TTS-Provider": tts.provider_for(payload.language),
+            "X-TTS-Provider": tts.active_provider(payload.language),
             "X-TTS-Cached": "hit" if was_cached else "miss",
         },
     )
+
+
+@router.get(
+    "/speak",
+    summary="Read text aloud (playable URL)",
+    response_class=StreamingResponse,
+    responses={
+        200: {"content": {"audio/mpeg": {}}, "description": "MP3 audio"},
+        413: {"description": "Text too long"},
+        503: {"description": "No speech provider is configured for this language"},
+    },
+)
+async def speak_url(
+    text: Annotated[str, Query(min_length=1, description="What to say")],
+    language: Annotated[VoiceLanguage, Query(description="en, hi or mr")] = "en",
+):
+    """The same audio as `POST /speak`, addressable as a plain URL.
+
+    An `<audio src=...>` element and React Native's player can only be pointed at
+    a URL — neither can issue a POST with a JSON body. Without this the app has
+    no way to play server-side speech at all and silently falls back to the
+    device's own robotic voice, which is what it was doing.
+
+    GET also makes the response cacheable by the browser and any CDN in front of
+    it, so a repeated prompt costs nothing at all.
+    """
+    return await speak(SpeakRequest(text=text, language=language))
 
 
 def _unavailable(exc: Exception) -> HTTPException:
