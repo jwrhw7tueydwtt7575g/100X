@@ -341,8 +341,16 @@ const FAMOUS_LANDMARKS = [
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
       });
     }
-    function tel(phone) {
-      return phone ? '<br/>📞 <a href="tel:' + esc(phone) + '">' + esc(phone) + '</a>' : '';
+    function callBtn(phone) {
+      if (!phone) return '';
+      return '<a href="tel:' + esc(phone) + '" style="display:inline-block;margin-top:6px;margin-right:6px;padding:4px 9px;background:#2563eb;color:#ffffff!important;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600;">📞 Call ' + esc(phone) + '</a>';
+    }
+    function dirBtn(lat, lng, name) {
+      var url = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng;
+      return '<a href="' + url + '" target="_blank" style="display:inline-block;margin-top:6px;padding:4px 9px;background:#0d9488;color:#ffffff!important;border-radius:6px;text-decoration:none;font-size:11px;font-weight:600;">🧭 Get Directions</a>';
+    }
+    function actions(phone, lat, lng, name) {
+      return '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px;">' + callBtn(phone) + dirBtn(lat, lng, name) + '</div>';
     }
     function pin(lat, lng, html, size) {
       return L.marker([lat, lng], {
@@ -352,8 +360,6 @@ const FAMOUS_LANDMARKS = [
 
     var map = L.map('map', { zoomControl: false }).setView([DATA.user.lat, DATA.user.lng], 15);
 
-    // Without a Mapbox token the styles endpoint 401s on every tile and the map
-    // renders as a blank grey box. OpenStreetMap needs no key.
     if (DATA.mapboxToken) {
       L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/{z}/{x}/{y}@2x?access_token=' + DATA.mapboxToken, {
         maxZoom: 19, attribution: '© Mapbox © OpenStreetMap'
@@ -373,7 +379,8 @@ const FAMOUS_LANDMARKS = [
         .bindPopup('<b>' + esc(zone.zoneName) + '</b><br/>Crowd: ' + Math.round(zone.density) +
           '% (' + esc(String(zone.status).replace('_', ' ')) + ')' +
           (zone.waitMinutes ? '<br/>⏱ About ' + esc(zone.waitMinutes) + ' min wait' : '') +
-          (zone.recommendation ? '<br/>' + esc(zone.recommendation) : ''));
+          (zone.recommendation ? '<br/>' + esc(zone.recommendation) : '') +
+          actions(null, zone.latitude, zone.longitude, zone.zoneName));
     });
 
     DATA.facilities.forEach(function (item) {
@@ -383,7 +390,7 @@ const FAMOUS_LANDMARKS = [
         .bindPopup('<b>' + icon + ' ' + esc(item.name) + '</b><br/>' +
           esc(item.category) + (item.distance ? ' • ' + esc(item.distance) : '') +
           (item.availability ? '<br/>' + esc(item.availability) : '') +
-          tel(item.phone || item.contact));
+          actions(item.phone || item.contact, item.latitude, item.longitude, item.name));
     });
 
     DATA.sevas.forEach(function (seva) {
@@ -392,7 +399,8 @@ const FAMOUS_LANDMARKS = [
           '🚩 ' + esc(seva.title) + '</div>', [150, 24])
         .addTo(map)
         .bindPopup('<b>🚩 ' + esc(seva.title) + '</b><br/>By ' + esc(seva.providerName) +
-          '<br/>📍 ' + esc(seva.address) + tel(seva.contactPhone));
+          '<br/>📍 ' + esc(seva.address) +
+          actions(seva.contactPhone, seva.latitude, seva.longitude, seva.title));
     });
 
     (DATA.famousLandmarks || []).forEach(function (landmark) {
@@ -401,7 +409,8 @@ const FAMOUS_LANDMARKS = [
           landmark.icon + ' ' + esc(landmark.name) + '</div>', [175, 26])
         .addTo(map)
         .bindPopup('<b>' + landmark.icon + ' ⭐ FAMOUS LANDMARK</b><br/><b>' + esc(landmark.name) + '</b><br/>' +
-          esc(landmark.description) + tel(landmark.phone));
+          esc(landmark.description) +
+          actions(landmark.phone, landmark.lat, landmark.lng, landmark.name));
     });
 
     var fitTo = null;
