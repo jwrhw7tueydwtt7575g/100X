@@ -131,39 +131,85 @@ export const mockConversationApi = {
     ) {
       kind = 'facility';
       let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' | 'police' = 'medical';
-      let name = 'Wari Medical Post & First Aid';
-      let distStr = '0.8 km';
-      let lat = request.latitude ?? 17.6778;
-      let lng = request.longitude ?? 75.3283;
-      let phone: string | undefined = undefined;
+      let defaultName = 'Sub-District Govt Hospital Pandharpur';
+      let defaultLat = 17.6738;
+      let defaultLng = 75.3312;
+      let defaultPhone = '+912166222333';
 
       if (query.includes('food') || query.includes('restaurant') || query.includes('hotel') || query.includes('dhaba') || query.includes('जेवण') || query.includes('भोजन') || query.includes('अन्नछत्र') || query.includes('खाना') || query.includes('breakfast')) {
         category = 'food';
-        name = 'Shree Vitthal Free Food Annachatra';
-        distStr = '0.3 km';
+        defaultName = 'Shree Vitthal Free Food Annachatra';
+        defaultLat = 17.6780;
+        defaultLng = 75.3275;
+        defaultPhone = '+919822012345';
       } else if (query.includes('stay') || query.includes('accommodation') || query.includes('lodging') || query.includes('room') || query.includes('मुक्काम') || query.includes('निवास')) {
         category = 'accommodation';
-        name = 'Wari Bhakta Niwas & Free Guest Stay';
-        distStr = '0.5 km';
+        defaultName = 'Shri Vitthal Rukmini Bhakta Niwas Residence';
+        defaultLat = 17.6795;
+        defaultLng = 75.3315;
+        defaultPhone = '1800-233-1000';
       } else if (query.includes('water') || query.includes('paani') || query.includes('पाणी') || query.includes('पानी')) {
         category = 'water';
-        name = 'Pure Drinking Water Seva Post';
-        distStr = '0.1 km';
+        defaultName = 'Bhima Ghat Pure Drinking Water Station';
+        defaultLat = 17.6808;
+        defaultLng = 75.3265;
+        defaultPhone = '1800-233-1000';
       } else if (query.includes('toilet') || query.includes('washroom') || query.includes('restroom') || query.includes('शौचालय') || query.includes('स्वच्छतागृह')) {
         category = 'toilet';
-        name = 'Public Sanitation & Washroom Block';
-        distStr = '0.4 km';
+        defaultName = 'Pandharpur Sanitation & Washroom Block #4';
+        defaultLat = 17.6765;
+        defaultLng = 75.3290;
+        defaultPhone = '1800-233-1000';
       } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस') || query.includes('chowky') || query.includes('cop') || query.includes('thana')) {
         category = 'police';
-        name = 'Wari Temple Police Chowky & Outpost';
-        distStr = '0.3 km';
-        phone = '112';
+        defaultName = 'Pandharpur City Police Station & Gate 1 Outpost';
+        defaultLat = 17.6755;
+        defaultLng = 75.3298;
+        defaultPhone = '112';
       }
 
-      const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
-      let mapboxFound = false;
       const userLat = request.latitude ?? 17.6778;
       const userLng = request.longitude ?? 75.3283;
+      const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
+
+      const facilityWidgets: ToolWidget[] = [];
+
+      // 1. Check for Volunteer Community Charity Sevas from AsyncStorage / Local Store
+      try {
+        const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
+        if (storedSevas) {
+          const parsedSevas = JSON.parse(storedSevas) as any[];
+          const matchingSevas = parsedSevas.filter((s) => s.category === category && s.isActive !== false);
+          for (const seva of matchingSevas) {
+            facilityWidgets.push({
+              type: 'nearby_facility',
+              data: {
+                category,
+                name: seva.title,
+                providerName: seva.providerName || 'Volunteer Seva Trust',
+                distance: calcDistanceStr(userLat, userLng, seva.latitude, seva.longitude),
+                latitude: seva.latitude,
+                longitude: seva.longitude,
+                phone: seva.contactPhone || defaultPhone,
+                availability: 'Open · Free Community Charity Seva (Available)',
+                isCharity: true,
+                isSeva: true,
+                isLocked: Boolean(seva.isLocked),
+                lockedByName: seva.lockedByName,
+              },
+            });
+          }
+        }
+      } catch {
+        // Continue to public POIs
+      }
+
+      // 2. Fetch live Mapbox Places around live GPS coordinates
+      let publicName = defaultName;
+      let publicLat = defaultLat;
+      let publicLng = defaultLng;
+      let publicPhone: string | undefined = defaultPhone;
+      let publicDistStr = calcDistanceStr(userLat, userLng, defaultLat, defaultLng);
 
       if (token) {
         try {
@@ -182,54 +228,50 @@ export const mockConversationApi = {
           const data = await res.json();
           if (data && data.features && data.features.length > 0) {
             const first = data.features[0];
-            name = first.text || first.place_name?.split(',')[0] || name;
-            lng = first.center[0];
-            lat = first.center[1];
-            mapboxFound = true;
-            if (first.properties && (first.properties.tel || first.properties.phone)) {
-              phone = first.properties.tel || first.properties.phone;
+            const rawText = (first.text || '').trim();
+            const placeName = (first.place_name || '').trim();
+
+            if (!rawText || rawText.length < 5 || ['hotel', 'hospital', 'restaurant', 'police', 'doctor'].includes(rawText.toLowerCase())) {
+              const parts = placeName.split(',').map((s: string) => s.trim());
+              publicName = parts.length > 1 ? `${parts[0]}, ${parts[1]}` : `${parts[0]} Pandharpur`;
+            } else {
+              publicName = rawText;
             }
-            distStr = calcDistanceStr(userLat, userLng, lat, lng);
+
+            publicLng = first.center[0];
+            publicLat = first.center[1];
+            if (first.properties && (first.properties.tel || first.properties.phone)) {
+              publicPhone = first.properties.tel || first.properties.phone;
+            }
+            publicDistStr = calcDistanceStr(userLat, userLng, publicLat, publicLng);
           }
         } catch {
-          // Fallback gracefully
+          // Graceful fallback to default public facility
         }
       }
 
-      // Check if user has published custom Sevas in AsyncStorage to include in nearby response
-      try {
-        const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
-        if (storedSevas) {
-          const parsedSevas = JSON.parse(storedSevas) as any[];
-          const matchingSevas = parsedSevas.filter((s) => s.category === category && s.isActive !== false);
-          if (matchingSevas.length > 0) {
-            const topSeva = matchingSevas[0];
-            name = `${topSeva.title} (Free ${topSeva.providerName} Seva)`;
-            lat = topSeva.latitude;
-            lng = topSeva.longitude;
-            phone = topSeva.contactPhone;
-            distStr = calcDistanceStr(userLat, userLng, lat, lng);
-          }
-        }
-      } catch {
-        // Fallback to standard facility name
-      }
-
-      facilityExtra = { category, name, distance: distStr };
-
-      widgets = [{
+      // Append official/public facility widget
+      facilityWidgets.push({
         type: 'nearby_facility',
         data: {
           category,
-          name,
-          distance: distStr,
-          latitude: lat,
-          longitude: lng,
-          phone,
-          availability: 'Open · Free Community Charity Seva (Available)',
-          isCharity: true,
+          name: publicName,
+          distance: publicDistStr,
+          latitude: publicLat,
+          longitude: publicLng,
+          phone: publicPhone,
+          availability: 'Open · 24x7 Public Service',
+          isCharity: false,
         },
-      }];
+      });
+
+      const topData = facilityWidgets[0]?.data as any;
+      facilityExtra = {
+        category,
+        name: topData?.name,
+        distance: topData?.distance,
+      };
+      widgets = facilityWidgets;
     } else if (query.includes('palkhi') || query.includes('पालखी') || query.includes('पालकी') || query.includes('palki') || query.includes('track palkhi')) {
       kind = 'palkhi';
       widgets = [{
