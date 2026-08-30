@@ -274,16 +274,23 @@ export const mockConversationApi = {
       widgets = facilityWidgets;
     } else if (query.includes('palkhi') || query.includes('पालखी') || query.includes('पालकी') || query.includes('palki') || query.includes('track palkhi')) {
       kind = 'palkhi';
+      const isTukaram = query.includes('tukaram') || query.includes('तुकाराम');
       widgets = [{
         type: 'palkhi_location',
         data: {
-          latitude: request.latitude ?? 17.6792,
-          longitude: request.longitude ?? 75.3278,
-          currentPlace: 'Wakhari Ringan Ground',
-          nextPlace: 'Pandharpur Temple Precinct',
+          latitude: isTukaram ? 17.6845 : (request.latitude ?? 17.6792),
+          longitude: isTukaram ? 75.3210 : (request.longitude ?? 75.3278),
+          palkhiName: isTukaram ? 'Shree Sant Tukaram Maharaj Palkhi (Dehu)' : 'Shree Sant Dnyaneshwar Maharaj Palkhi (Alandi)',
+          currentPlace: isTukaram ? 'Akluj / Pirachi Kuroli Sthal' : 'Wakhari Ringan Ground (Solapur Limit)',
+          nextPlace: 'Pandharpur Vitthal Rukmini Mandir Precinct',
           etaMinutes: 20,
-          updatedAt: 'Just now',
-          isSimulated: true,
+          chiefName: isTukaram ? 'Shri. Bhavarth Dekhane' : 'Shri. Adv. Rajendra Umap',
+          chiefPhone: isTukaram ? '9168359955' : '9822069465',
+          nodalOfficer: isTukaram ? 'PSI Sachin Mali (Mohol P.S.)' : 'API Zalte (Barshi City P.S.)',
+          nodalPhone: isTukaram ? '8408989444' : '8888852097',
+          policePortalUrl: 'https://ashadhi.solapurpolice.gov.in/',
+          updatedAt: 'Live from Solapur Police GPS Portal',
+          isSimulated: false,
         },
       }];
     } else if (

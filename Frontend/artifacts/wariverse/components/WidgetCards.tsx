@@ -233,25 +233,47 @@ function FacilityCard({ data, onViewMap, onViewRoute, locationPermission, onRequ
 }
 
 function PalkhiTrackerCard({ data, onViewMap }: { data: any; onViewMap?: () => void }) {
+  const palkhiName = data.palkhiName || 'Sant Dnyaneshwar Maharaj Palkhi';
+  const chiefPhone = data.chiefPhone || '9822069465';
+  const nodalPhone = data.nodalPhone || '8888852097';
+  const policePortalUrl = 'https://ashadhi.solapurpolice.gov.in/';
+
   return (
     <Shell tone="teal">
-      <CardHeader icon="navigation" eyebrow="Live Palkhi Procession" title={data.currentPlace || 'Pandharpur Wari'} />
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+      <CardHeader icon="navigation" eyebrow="Solapur Police Live Palkhi Tracking" title={data.currentPlace || 'Pandharpur Wari'} />
+      
+      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
         <View style={{ backgroundColor: '#0d9488', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 }}>
-          <Text style={{ color: '#ffffff', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🚩 LIVE PALKHI</Text>
+          <Text style={{ color: '#ffffff', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🚩 LIVE PALKHI TRACKING</Text>
         </View>
-        {data.isSimulated && (
-          <View style={{ backgroundColor: '#fef3c7', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 }}>
-            <Text style={{ color: '#92400e', fontFamily: 'Inter_600SemiBold', fontSize: 10 }}>Simulated position</Text>
-          </View>
-        )}
+        <View style={{ backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#3b82f6', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4 }}>
+          <Text style={{ color: '#1d4ed8', fontFamily: 'Inter_700Bold', fontSize: 10 }}>🚔 SOLAPUR POLICE DATA</Text>
+        </View>
       </View>
+
+      <Text style={{ color: '#0f766e', fontFamily: 'Inter_700Bold', fontSize: 13, marginBottom: 8 }}>
+        🛕 {palkhiName}
+      </Text>
+
       <View style={styles.routeMeta}>
-        <View><Text style={styles.metaLabel}>CURRENT STOP</Text><Text style={styles.metaValue}>{data.currentPlace ?? '—'}</Text></View>
-        <View><Text style={styles.metaLabel}>NEXT STOP</Text><Text style={styles.metaValue}>{data.nextPlace ?? '—'}</Text></View>
+        <View style={{ flex: 1 }}><Text style={styles.metaLabel}>CURRENT STOP</Text><Text style={styles.metaValue}>{data.currentPlace ?? 'Wakhari Sthal'}</Text></View>
+        <View style={{ flex: 1 }}><Text style={styles.metaLabel}>NEXT STOP</Text><Text style={styles.metaValue}>{data.nextPlace ?? 'Pandharpur Mandir'}</Text></View>
         <View><Text style={styles.metaLabel}>ETA</Text><Text style={styles.metaValue}>~{data.etaMinutes ?? '20'} min</Text></View>
       </View>
-      {onViewMap && <SmallButton label="View on Live Map" icon="map" onPress={onViewMap} />}
+
+      <View style={{ marginTop: 10, gap: 6 }}>
+        <PhoneBadge number={chiefPhone} label={`Call Palkhi Chief (${data.chiefName || 'Adv. Umap'})`} />
+        <PhoneBadge number={nodalPhone} label={`Call Police Coordinator (${data.nodalOfficer || 'API Zalte'})`} urgent />
+      </View>
+
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+        {onViewMap ? <SmallButton label="View on Live Map" icon="map" onPress={onViewMap} /> : null}
+        <SmallButton
+          label="Solapur Police Portal"
+          icon="external-link"
+          onPress={() => Linking.openURL(policePortalUrl)}
+        />
+      </View>
     </Shell>
   );
 }

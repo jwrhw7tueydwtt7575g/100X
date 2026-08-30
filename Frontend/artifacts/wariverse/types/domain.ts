@@ -34,6 +34,12 @@ export type PalkhiLocationWidget = {
     etaMinutes: number;
     updatedAt: string;
     isSimulated: boolean;
+    palkhiName?: string;
+    chiefName?: string;
+    chiefPhone?: string;
+    nodalOfficer?: string;
+    nodalPhone?: string;
+    policePortalUrl?: string;
   };
 };
 
