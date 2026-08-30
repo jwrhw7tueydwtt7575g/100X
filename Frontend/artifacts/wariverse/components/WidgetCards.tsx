@@ -55,8 +55,34 @@ function SmallButton({ label, icon, onPress, danger = false }: { label: string; 
 }
 
 function CrowdCard({ data, language, onViewMap }: { data: CrowdDensityWidget['data']; language: Language; onViewMap?: () => void }) {
-  const status = language === 'mr' ? 'जास्त' : language === 'hi' ? 'ज़्यादा' : 'High';
-  return <Shell tone="orange"><CardHeader icon="users" eyebrow="Live crowd" title={data.zoneName} /><View style={styles.crowdRow}><View><Text style={styles.metric}>{data.density}%</Text><Text style={styles.metricLabel}>{language === 'mr' ? 'गर्दीची पातळी' : language === 'hi' ? 'भीड़ का स्तर' : 'Crowd level'} · {status}</Text></View><View style={styles.meter}><View style={[styles.meterFill, { width: `${data.density}%` }]} /><View style={styles.meterDot} /></View></View><Text style={styles.updated}>Updated {data.updatedAt}</Text>{onViewMap && <SmallButton label={language === 'mr' ? 'नकाशावर पहा' : language === 'hi' ? 'नक्शे पर देखें' : 'View on map'} icon="map" onPress={onViewMap} />}</Shell>;
+  const statusLabel =
+    data.status === 'LOW'
+      ? (language === 'mr' ? 'कमी (जलद)' : language === 'hi' ? 'कम (त्वरित)' : 'Low (Fast Queue)')
+      : data.status === 'MODERATE'
+      ? (language === 'mr' ? 'मध्यम' : language === 'hi' ? 'मध्यम' : 'Moderate')
+      : data.status === 'VERY_HIGH'
+      ? (language === 'mr' ? 'अतिशय जास्त' : language === 'hi' ? 'अत्यधिक' : 'Very High')
+      : (language === 'mr' ? 'जास्त' : language === 'hi' ? 'ज़्यादा' : 'High');
+
+  const tone = data.status === 'LOW' ? 'teal' : data.status === 'MODERATE' ? 'yellow' : 'orange';
+
+  return (
+    <Shell tone={tone}>
+      <CardHeader icon="users" eyebrow="Live crowd" title={data.zoneName} />
+      <View style={styles.crowdRow}>
+        <View>
+          <Text style={styles.metric}>{data.density}%</Text>
+          <Text style={styles.metricLabel}>{language === 'mr' ? 'गर्दीची पातळी' : language === 'hi' ? 'भीड़ का स्तर' : 'Crowd level'} · {statusLabel}</Text>
+        </View>
+        <View style={styles.meter}>
+          <View style={[styles.meterFill, { width: `${Math.min(100, Math.max(5, data.density))}%` }]} />
+          <View style={styles.meterDot} />
+        </View>
+      </View>
+      <Text style={styles.updated}>Updated {data.updatedAt}</Text>
+      {onViewMap && <SmallButton label={language === 'mr' ? 'नकाशावर पहा' : language === 'hi' ? 'नक्शे पर देखें' : 'View on map'} icon="map" onPress={onViewMap} />}
+    </Shell>
+  );
 }
 
 function ForecastCard({ data }: { data: ForecastWidget['data'] }) {

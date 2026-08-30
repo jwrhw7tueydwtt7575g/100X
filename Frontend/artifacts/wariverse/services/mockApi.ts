@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ConversationResponse, IVRTurn, Language, ToolWidget } from '@/types/domain';
+import type { ConversationResponse, CrowdStatus, IVRTurn, Language, ToolWidget } from '@/types/domain';
 
 type MessageRequest = { sessionId: string; language: Language; message: string; latitude?: number | null; longitude?: number | null };
 
@@ -34,17 +34,24 @@ const routeWidget: ToolWidget = {
   },
 };
 
-function crowdWidget(): ToolWidget {
+function crowdWidget(
+  zoneId = 'mukhdarshan-queue',
+  zoneName = 'Mukhdarshan Queue',
+  density = 25,
+  status: CrowdStatus = 'LOW',
+  lat = 17.6782,
+  lon = 75.3288
+): ToolWidget {
   return {
     type: 'crowd_density',
     data: {
-      zoneId: 'gate-3',
-      zoneName: 'Gate 3',
-      density: 82,
-      status: 'HIGH',
-      latitude: 18.518,
-      longitude: 73.853,
-      updatedAt: '2 min ago',
+      zoneId,
+      zoneName,
+      density,
+      status,
+      latitude: lat,
+      longitude: lon,
+      updatedAt: 'Just now',
     },
   };
 }
@@ -318,7 +325,7 @@ export const mockIvrApi = {
         sessionId: input.sessionId,
         state: 'menu',
         language: lang,
-        prompt: 'Gate 3 is currently experiencing heavy crowd (82% capacity). Quietest zone is Mukhdarshan queue (15 min wait).',
+        prompt: 'Live Crowd Status: Mukhdarshan Queue is LOW (25% capacity, 15-20 min wait). Gate 2 North is MODERATE (52%). Padsparsha Queue is HIGH (78% capacity, 2-3 hrs wait). Gate 3 South is HEAVY (82%). Recommended fast route: Mukhdarshan Queue.',
         audioBase64: null,
         mediaType: 'audio/mpeg',
         options: [
@@ -327,7 +334,12 @@ export const mockIvrApi = {
           { key: '3', label: '3 · Nearby Seva' },
           { key: '0', label: '0 · Back to Main Menu' },
         ],
-        widgets: [crowdWidget()],
+        widgets: [
+          crowdWidget('mukhdarshan-queue', 'Mukhdarshan Queue (15-20 min)', 25, 'LOW', 17.6782, 75.3288),
+          crowdWidget('darshan-mandap-token', 'Sant Dnyaneshwar Darshan Mandap', 45, 'MODERATE', 17.6798, 75.3292),
+          crowdWidget('padsparsha-queue', 'Padsparsha Touch Darshan Queue', 78, 'HIGH', 17.6773, 75.3312),
+          crowdWidget('gate-3', 'Gate 3 (South Entrance)', 82, 'HIGH', 17.6779, 75.3301),
+        ],
         endsSession: false,
       };
     }
