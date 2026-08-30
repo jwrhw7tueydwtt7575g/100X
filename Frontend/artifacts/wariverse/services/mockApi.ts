@@ -196,24 +196,23 @@ export const mockConversationApi = {
         }
       }
 
-      // Check if user has published custom Sevas in AsyncStorage if mapbox search didn't run or query asks for free/seva
-      if (!mapboxFound || query.includes('free') || query.includes('seva') || query.includes('मोफत') || query.includes('मुफ्त') || query.includes('लंगर')) {
-        try {
-          const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
-          if (storedSevas) {
-            const parsedSevas = JSON.parse(storedSevas) as any[];
-            const matching = parsedSevas.find((s) => s.category === category && s.isActive !== false);
-            if (matching) {
-              name = `${matching.title} (${matching.providerName})`;
-              lat = matching.latitude;
-              lng = matching.longitude;
-              phone = matching.contactPhone;
-              distStr = calcDistanceStr(userLat, userLng, lat, lng);
-            }
+      // Check if user has published custom Sevas in AsyncStorage to include in nearby response
+      try {
+        const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
+        if (storedSevas) {
+          const parsedSevas = JSON.parse(storedSevas) as any[];
+          const matchingSevas = parsedSevas.filter((s) => s.category === category && s.isActive !== false);
+          if (matchingSevas.length > 0) {
+            const topSeva = matchingSevas[0];
+            name = `${topSeva.title} (Free ${topSeva.providerName} Seva)`;
+            lat = topSeva.latitude;
+            lng = topSeva.longitude;
+            phone = topSeva.contactPhone;
+            distStr = calcDistanceStr(userLat, userLng, lat, lng);
           }
-        } catch {
-          // Fallback to default name
         }
+      } catch {
+        // Fallback to standard facility name
       }
 
       facilityExtra = { category, name, distance: distStr };
@@ -227,7 +226,22 @@ export const mockConversationApi = {
           latitude: lat,
           longitude: lng,
           phone,
-          availability: 'Open · 24x7 Staffed',
+          availability: 'Open · Free Community Charity Seva (Available)',
+          isCharity: true,
+        },
+      }];
+    } else if (query.includes('palkhi') || query.includes('पालखी') || query.includes('पालकी') || query.includes('palki') || query.includes('track palkhi')) {
+      kind = 'palkhi';
+      widgets = [{
+        type: 'palkhi_location',
+        data: {
+          latitude: request.latitude ?? 17.6792,
+          longitude: request.longitude ?? 75.3278,
+          currentPlace: 'Wakhari Ringan Ground',
+          nextPlace: 'Pandharpur Temple Precinct',
+          etaMinutes: 20,
+          updatedAt: 'Just now',
+          isSimulated: true,
         },
       }];
     } else if (
