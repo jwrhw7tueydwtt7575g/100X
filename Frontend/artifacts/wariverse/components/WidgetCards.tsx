@@ -6,8 +6,8 @@ import { deriveWalkingSteps } from '@/services/directions';
 import colors from '@/constants/colors';
 import type { CrowdDensityWidget, EscalationWidget, FacilityWidget, ForecastWidget, Language, LostFoundWidget, RouteWidget, SOSWidget, TempleInfoWidget, ToolWidget } from '@/types/domain';
 
-const iconFor: Record<string, keyof typeof Feather.glyphMap> = { medical: 'heart', water: 'droplet', toilet: 'grid', rest: 'coffee', food: 'shopping-bag', accommodation: 'home' };
-const labelFor: Record<string, string> = { medical: 'Medical', water: 'Drinking water', toilet: 'Toilet', rest: 'Rest shelter', food: 'Food', accommodation: 'Accommodation' };
+const iconFor: Record<string, keyof typeof Feather.glyphMap> = { medical: 'heart', police: 'shield', water: 'droplet', toilet: 'grid', rest: 'coffee', food: 'shopping-bag', accommodation: 'home' };
+const labelFor: Record<string, string> = { medical: 'Medical', police: 'Police Outpost & Chowky', water: 'Drinking water', toilet: 'Toilet', rest: 'Rest shelter', food: 'Food', accommodation: 'Accommodation' };
 
 export function ToolWidgetRenderer({
   widget,

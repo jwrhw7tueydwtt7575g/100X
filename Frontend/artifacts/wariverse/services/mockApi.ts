@@ -130,7 +130,7 @@ export const mockConversationApi = {
       query.includes('हॉस्पिटल') || query.includes('पोलीस')
     ) {
       kind = 'facility';
-      let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' = 'medical';
+      let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' | 'police' = 'medical';
       let name = 'Wari Medical Post & First Aid';
       let distStr = '0.8 km';
       let lat = request.latitude ?? 17.6778;
@@ -153,9 +153,11 @@ export const mockConversationApi = {
         category = 'toilet';
         name = 'Public Sanitation & Washroom Block';
         distStr = '0.4 km';
-      } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस')) {
-        name = 'Wari Police Assistance Desk';
-        distStr = '0.6 km';
+      } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस') || query.includes('chowky') || query.includes('cop') || query.includes('thana')) {
+        category = 'police';
+        name = 'Wari Temple Police Chowky & Outpost';
+        distStr = '0.3 km';
+        phone = '112';
       }
 
       const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
@@ -167,6 +169,7 @@ export const mockConversationApi = {
         try {
           const mapboxCategoryMap: Record<string, string> = {
             medical: 'hospital',
+            police: 'police',
             food: 'restaurant',
             accommodation: 'hotel',
             water: 'drinking_water',
