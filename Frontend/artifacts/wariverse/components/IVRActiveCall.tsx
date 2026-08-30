@@ -106,42 +106,27 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
         setCallState('ended');
         return;
       }
-<<<<<<< HEAD
-      if (muted) {
-=======
       if (!next.audioBase64 || muted) {
         if (!muted && next.prompt) {
           textToSpeechService.speak(next.prompt, next.language || language);
         }
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
         setCallState('connected');
         return;
       }
 
       setCallState('speaking');
-<<<<<<< HEAD
-      // Queued rather than played directly: a turn that arrives while the
-      // previous prompt is still speaking waits its place instead of cutting
-      // the caller off mid-sentence.
-      //
-      // The prompt text goes along with the audio so that a device which cannot
-      // play the MP3 — or a backend with no OpenAI key, which sends no audio at
-      // all — still reads the menu out loud instead of going quiet.
-      await enqueuePlayback(next.audioBase64, next.mediaType, {
-        speaker,
-        text: next.prompt,
-        language: next.language,
-      });
-=======
       try {
-        await enqueuePlayback(next.audioBase64, next.mediaType, { speaker });
+        await enqueuePlayback(next.audioBase64, next.mediaType, {
+          speaker,
+          text: next.prompt,
+          language: next.language,
+        });
       } catch (err) {
         console.warn('Base64 playback failed, falling back to TTS:', err);
         if (!muted && next.prompt) {
           await textToSpeechService.speak(next.prompt, next.language || language);
         }
       }
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
       if (mounted.current && seq === turnSeq.current) setCallState('connected');
     },
     [muted, speaker, language]

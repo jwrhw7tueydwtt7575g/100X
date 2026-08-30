@@ -14,7 +14,6 @@ import base64
 from typing import Annotated
 
 import structlog
-<<<<<<< HEAD
 from fastapi import (
     APIRouter,
     File,
@@ -25,9 +24,6 @@ from fastapi import (
     UploadFile,
     status,
 )
-=======
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
@@ -146,27 +142,39 @@ async def speak_get(
 ):
     clean_text = text.strip()
     if not clean_text:
-        raise HTTPException(status_code=400, detail="Text cannot be empty")
-
-    if not tts.is_configured(language) and tts.openai_configured():
-        async def stream_openai():
-            try:
-                async for chunk in tts.synthesize_openai(clean_text, language):
-                    yield chunk
-            except tts.SynthesisError as exc:
-                log.error("tts_openai_stream_failed", language=language, error=str(exc))
-
-        return StreamingResponse(stream_openai(), media_type=tts.MEDIA_TYPE)
-
-    if not tts.is_configured(language):
+        raise HTTPException(status_code=422, detail="Text cannot be empty")
+    if len(clean_text) > settings.tts_max_characters:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"no speech provider configured for {language}",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"text is {len(clean_text)} characters; the limit is "
+                f"{settings.tts_max_characters}"
+            ),
         )
 
+    if not tts.active_is_configured(language):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"no speech provider configured for {language} "
+                f"({tts.active_provider(language)})"
+            ),
+        )
+
+    was_cached = await tts.cached_active(clean_text, language) is not None
+    source = tts.synthesize_active(clean_text, language)
+    try:
+        first = await anext(source, b"")
+    except tts.SynthesisError as exc:
+        raise _unavailable(exc) from exc
+
+    if not first:
+        raise _unavailable(tts.SynthesisError("the speech provider returned no audio"))
+
     async def stream():
+        yield first
         try:
-            async for chunk in tts.synthesize(clean_text, language):
+            async for chunk in source:
                 yield chunk
         except tts.SynthesisError as exc:
             log.error("tts_stream_failed", language=language, error=str(exc))
@@ -176,7 +184,8 @@ async def speak_get(
         media_type=tts.MEDIA_TYPE,
         headers={
             "Cache-Control": f"private, max-age={settings.tts_cache_ttl_seconds}",
-            "X-TTS-Provider": tts.provider_for(language),
+            "X-TTS-Provider": tts.active_provider(language),
+            "X-TTS-Cached": "hit" if was_cached else "miss",
         },
     )
 
@@ -201,32 +210,7 @@ async def speak(payload: SpeakRequest):
                 f"{settings.tts_max_characters}"
             ),
         )
-<<<<<<< HEAD
     if not tts.active_is_configured(payload.language):
-=======
-    if not tts.is_configured(payload.language) and tts.openai_configured():
-        if payload.encoding == "base64":
-            try:
-                audio = await tts.synthesize_openai_bytes(text, payload.language)
-            except tts.SynthesisError as exc:
-                raise _unavailable(exc) from exc
-            return JSONResponse(
-                content=SpeakBase64Response(
-                    audio_base64=base64.b64encode(audio).decode("ascii"),
-                    language=payload.language,
-                    cached=False,
-                ).model_dump(mode="json")
-            )
-        async def stream_openai():
-            try:
-                async for chunk in tts.synthesize_openai(text, payload.language):
-                    yield chunk
-            except tts.SynthesisError as exc:
-                log.error("tts_openai_stream_failed", language=payload.language, error=str(exc))
-        return StreamingResponse(stream_openai(), media_type=tts.MEDIA_TYPE)
-
-    if not tts.is_configured(payload.language):
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(

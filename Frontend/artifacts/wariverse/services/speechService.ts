@@ -148,43 +148,7 @@ export const speechService: SpeechService = {
   },
 };
 
-<<<<<<< HEAD
-/* -------------------------------------------------------------------------- */
-/* text to speech                                                              */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Reading text aloud, on every platform.
- *
- * This used to open with `if (typeof window === 'undefined') return`, which is
- * true on a physical iOS/Android device — so the app said nothing at all on the
- * hardware pilgrims actually carry, and only ever worked in a browser. It then
- * reached for `new Audio(...)`, which React Native does not have either.
- *
- * Two layers, in order:
- *
- *   1. **Server audio.** `GET /api/voice/speak` streams an OpenAI `tts-1` MP3.
- *      This is the good voice, and it is cached server-side, so a repeated
- *      prompt costs nothing. Web only, because playing a URL on native needs
- *      `expo-av`, which is not installed (see services/ivrAudio.ts).
- *   2. **The device's own voice**, via `expo-speech` — which works on iOS,
- *      Android *and* web. Robotic next to `tts-1`, but it is the layer that
- *      guarantees a pilgrim is never met with silence.
- */
-
 let activeAudioElement: HTMLAudioElement | null = null;
-=======
-let activeAudioElement: any = null;
-
-function getExpoSpeech(): any {
-  try {
-    const name = 'expo-speech';
-    return require(name);
-  } catch {
-    return null;
-  }
-}
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
 
 const isWeb = typeof window !== 'undefined' && typeof document !== 'undefined';
 
@@ -194,12 +158,11 @@ export async function speakOnDevice(text: string, language: Language): Promise<b
   if (!spoken) return false;
 
   try {
+    // @ts-ignore
     const Speech = await import('expo-speech');
     await new Promise<void>((resolve) => {
       Speech.speak(spoken, {
         language: languageTag[language] || 'en-IN',
-        // Slightly under natural pace: this is read to someone walking in a
-        // crowd, often in their second language.
         rate: 0.95,
         onDone: () => resolve(),
         onStopped: () => resolve(),
@@ -232,6 +195,7 @@ export async function stopSpeaking(): Promise<void> {
     activeAudioElement = null;
   }
   try {
+    // @ts-ignore
     const Speech = await import('expo-speech');
     Speech.stop();
   } catch {
@@ -253,8 +217,6 @@ async function playServerAudio(text: string, language: Language): Promise<boolea
   try {
     const audio = new Audio(url);
     activeAudioElement = audio;
-    // `play()` rejects on autoplay policy and on a non-audio response (a 503
-    // when no key is configured), which is exactly when we want the fallback.
     await audio.play();
     return true;
   } catch (error) {
@@ -266,7 +228,6 @@ async function playServerAudio(text: string, language: Language): Promise<boolea
 
 export const textToSpeechService: TextToSpeechService = {
   async speak(text: string, language: Language) {
-<<<<<<< HEAD
     const spoken = (text ?? '').trim();
     if (!spoken) return;
 
@@ -277,76 +238,5 @@ export const textToSpeechService: TextToSpeechService = {
 
   async stop() {
     await stopSpeaking();
-=======
-    if (!text || !text.trim()) return;
-    const cleanText = text.trim();
-    const langTag = languageTag[language] || 'en-IN';
-
-    // 1. Try native expo-speech on iOS/Android physical mobile devices
-    const Speech = getExpoSpeech();
-    if (Speech && typeof Speech.speak === 'function') {
-      try {
-        if (typeof Speech.stop === 'function') {
-          Speech.stop();
-        }
-        Speech.speak(cleanText, {
-          language: langTag,
-          pitch: 1.0,
-          rate: 0.95,
-        });
-        return;
-      } catch (err) {
-        console.warn('expo-speech native playback failed, trying HTML5/Web Audio:', err);
-      }
-    }
-
-    // 2. Try HTML5 Audio (Web or Web-view)
-    if (typeof window !== 'undefined' && typeof (window as any).Audio !== 'undefined') {
-      if (activeAudioElement) {
-        try { activeAudioElement.pause(); } catch {}
-        activeAudioElement = null;
-      }
-      if ('speechSynthesis' in window) {
-        try { window.speechSynthesis.cancel(); } catch {}
-      }
-
-      try {
-        const audioUrl = `${getApiBaseUrl()}/api/voice/speak?text=${encodeURIComponent(cleanText)}&language=${encodeURIComponent(language)}`;
-        const audio = new (window as any).Audio(audioUrl);
-        activeAudioElement = audio;
-        await audio.play();
-        return;
-      } catch (err) {
-        console.warn('Backend TTS audio playback failed, falling back to Web SpeechSynthesis:', err);
-      }
-
-      // 3. Try Web SpeechSynthesis
-      if ('speechSynthesis' in window) {
-        try {
-          const utterance = new SpeechSynthesisUtterance(cleanText);
-          utterance.lang = langTag;
-          window.speechSynthesis.speak(utterance);
-        } catch (e) {
-          console.warn('Web SpeechSynthesis failed:', e);
-        }
-      }
-    }
-  },
-
-  async stop() {
-    const Speech = getExpoSpeech();
-    if (Speech && typeof Speech.stop === 'function') {
-      try { Speech.stop(); } catch {}
-    }
-    if (typeof window !== 'undefined') {
-      if (activeAudioElement) {
-        try { activeAudioElement.pause(); } catch {}
-        activeAudioElement = null;
-      }
-      if ('speechSynthesis' in window) {
-        try { window.speechSynthesis.cancel(); } catch {}
-      }
-    }
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
   },
 };

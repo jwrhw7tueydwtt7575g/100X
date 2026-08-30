@@ -101,54 +101,33 @@ export async function playBase64(
     }
   }
 
-<<<<<<< HEAD
-  // On a physical phone without `expo-av` there is no way to play an MP3, so
-  // this reports failure and `enqueuePlayback` speaks the text instead. It used
-  // to `return` here, which is why calls were silent on real devices.
-  if (!isWeb || typeof Audio === 'undefined') return false;
-
-  try {
-    const audio = new Audio(uri);
-    webAudio = audio;
-    let played = true;
-    await new Promise<void>((resolve) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => {
-        // A corrupt or truncated base64 payload lands here.
-        played = false;
-        resolve();
-      };
-      audio.play().catch(() => {
-        played = false;
-        resolve();
-      });
-    });
-    return played;
-  } catch (error) {
-    console.warn('[ivr] audio playback failed', error);
-    return false;
-  } finally {
-    if (webAudio) {
-      webAudio = null;
-=======
   if (typeof window !== 'undefined' && typeof (window as any).Audio !== 'undefined') {
     try {
       const audio = new (window as any).Audio(uri);
       webAudio = audio;
+      let played = true;
       await new Promise<void>((resolve) => {
         audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        audio.play().catch(() => resolve());
+        audio.onerror = () => {
+          played = false;
+          resolve();
+        };
+        audio.play().catch(() => {
+          played = false;
+          resolve();
+        });
       });
+      return played;
     } catch (error) {
       console.warn('[ivr] audio playback failed', error);
+      return false;
     } finally {
       if (webAudio) {
         webAudio = null;
       }
->>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
     }
   }
+  return false;
 }
 
 export async function stopPlayback(): Promise<void> {
