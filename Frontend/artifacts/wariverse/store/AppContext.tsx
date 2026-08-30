@@ -144,6 +144,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } catch {
           // Use last known state if position check times out or fails
         }
+      } else if (typeof navigator !== 'undefined' && navigator.geolocation && (currentLat === null || currentLng === null)) {
+        await new Promise<void>((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              currentLat = pos.coords.latitude;
+              currentLng = pos.coords.longitude;
+              setLocation({ latitude: currentLat, longitude: currentLng, permission: 'granted' });
+              resolve();
+            },
+            () => resolve(),
+            { timeout: 3000 }
+          );
+        });
       }
 
       try {

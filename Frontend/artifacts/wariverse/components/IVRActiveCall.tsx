@@ -22,6 +22,7 @@ import {
   stopRecording,
   whenPlaybackIdle,
 } from '@/services/ivrAudio';
+import { textToSpeechService } from '@/services/speechService';
 import type { IVRCallState, IVRPreset, IVRTurn, Language } from '@/types/domain';
 
 /**
@@ -105,12 +106,20 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
         setCallState('ended');
         return;
       }
+<<<<<<< HEAD
       if (muted) {
+=======
+      if (!next.audioBase64 || muted) {
+        if (!muted && next.prompt) {
+          textToSpeechService.speak(next.prompt, next.language || language);
+        }
+>>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
         setCallState('connected');
         return;
       }
 
       setCallState('speaking');
+<<<<<<< HEAD
       // Queued rather than played directly: a turn that arrives while the
       // previous prompt is still speaking waits its place instead of cutting
       // the caller off mid-sentence.
@@ -123,9 +132,19 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
         text: next.prompt,
         language: next.language,
       });
+=======
+      try {
+        await enqueuePlayback(next.audioBase64, next.mediaType, { speaker });
+      } catch (err) {
+        console.warn('Base64 playback failed, falling back to TTS:', err);
+        if (!muted && next.prompt) {
+          await textToSpeechService.speak(next.prompt, next.language || language);
+        }
+      }
+>>>>>>> 0c9551d068d2b4d883a24568d41d33dd27d2ee14
       if (mounted.current && seq === turnSeq.current) setCallState('connected');
     },
-    [muted, speaker]
+    [muted, speaker, language]
   );
 
   /**
@@ -369,37 +388,39 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
 
       {/* the speaking indicator, and what is being said -------------------- */}
       <View style={styles.stage}>
-        <View
-          style={[
-            styles.orb,
-            callState === 'speaking' && styles.orbSpeaking,
-            callState === 'listening' && styles.orbListening,
-          ]}
-        >
-          {['thinking', 'connecting', 'reconnecting', 'waiting'].includes(callState) ? (
-            <ActivityIndicator
-              color={callState === 'reconnecting' ? ivrTheme.amber : ivrTheme.teal}
-              size="large"
-            />
-          ) : (
-            <Feather
-              name={
-                callState === 'listening'
-                  ? 'mic'
-                  : callState === 'speaking'
-                    ? 'volume-2'
-                    : 'phone-call'
-              }
-              size={34}
-              color={callState === 'listening' ? ivrTheme.amber : ivrTheme.teal}
-            />
-          )}
-        </View>
+        {!showKeypad ? (
+          <View
+            style={[
+              styles.orb,
+              callState === 'speaking' && styles.orbSpeaking,
+              callState === 'listening' && styles.orbListening,
+            ]}
+          >
+            {['thinking', 'connecting', 'reconnecting', 'waiting'].includes(callState) ? (
+              <ActivityIndicator
+                color={callState === 'reconnecting' ? ivrTheme.amber : ivrTheme.teal}
+                size="large"
+              />
+            ) : (
+              <Feather
+                name={
+                  callState === 'listening'
+                    ? 'mic'
+                    : callState === 'speaking'
+                      ? 'volume-2'
+                      : 'phone-call'
+                }
+                size={34}
+                color={callState === 'listening' ? ivrTheme.amber : ivrTheme.teal}
+              />
+            )}
+          </View>
+        ) : null}
 
         <ScrollView
-          style={styles.transcript}
+          style={[styles.transcript, showKeypad && styles.transcriptCompact]}
           contentContainerStyle={styles.transcriptBody}
-          showsVerticalScrollIndicator={false}
+          showsVerticalScrollIndicator={true}
         >
           {/* Always readable, never audio-only: the prompt has to survive a
               muted call, a declined mic, or a backend with no TTS key. */}
@@ -441,7 +462,7 @@ export function IVRActiveCall({ preset, language, location, onEnd }: Props) {
               accessibilityLabel={`${option.label}, press ${option.key}`}
             >
               <Text style={styles.optionKey}>{option.key}</Text>
-              <Text style={styles.optionLabel} numberOfLines={1}>
+              <Text style={styles.optionLabel} numberOfLines={2}>
                 {option.label}
               </Text>
             </Pressable>
@@ -603,8 +624,9 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
   },
 
-  transcript: { maxHeight: 168, alignSelf: 'stretch' },
-  transcriptBody: { gap: 10, paddingHorizontal: 4 },
+  transcript: { maxHeight: 220, alignSelf: 'stretch' },
+  transcriptCompact: { maxHeight: 110 },
+  transcriptBody: { gap: 10, paddingHorizontal: 4, paddingVertical: 4 },
   prompt: {
     fontSize: 17,
     lineHeight: 25,

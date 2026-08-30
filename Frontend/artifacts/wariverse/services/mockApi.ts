@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ConversationResponse, Language, ToolWidget } from '@/types/domain';
+import type { ConversationResponse, IVRTurn, Language, ToolWidget } from '@/types/domain';
 
 type MessageRequest = { sessionId: string; language: Language; message: string; latitude?: number | null; longitude?: number | null };
 
@@ -282,6 +282,137 @@ export const mockConversationApi = {
       language,
       responseText: language === 'mr' ? 'मदतीची विनंती पाठवली आहे.' : language === 'hi' ? 'मदद की request भेज दी गई है।' : 'Help has been requested.',
       widgets: [{ type: 'sos', data: { status: 'ACTIVATED', message: language === 'mr' ? 'मदतीची विनंती पाठवली आहे.' : language === 'hi' ? 'मदद की request भेज दी गई है।' : 'Help has been requested.', controlRoomStatus: 'Connected', timestamp: now() } }],
+    };
+  },
+};
+
+export const mockIvrApi = {
+  async start(input: { sessionId: string; language?: Language; latitude?: number | null; longitude?: number | null }): Promise<IVRTurn> {
+    const lang = input.language || 'en';
+    const prompts = {
+      mr: 'वारीव्हर्स डिजिटल हेल्पलाइनमध्ये आपले स्वागत आहे. गर्दीच्या माहितीसाठी १ दाबा, दर्शन वेळेसाठी २ दाबा, जवळील मोफत सेवेसाठी ३ दाबा, किंवा आपत्कालीन मदतीसाठी ४ दाबा. आपण बोलण्यासाठी बटण दाबून धरू शकता.',
+      hi: 'वारीव्हर्स डिजिटल हेल्पलाइन में आपका स्वागत है। भीड़ की स्थिति के लिए 1 दबाएं, दर्शन समय के लिए 2 दबाएं, पास की सेवाओं के लिए 3 दबाएं, या आपातकालीन सहायता के लिए 4 दबाएं। आप बोलने के लिए बटन दबाकर भी रख सकते हैं।',
+      en: 'Welcome to WariVerse Helpline. Press 1 for Live Crowd Density, 2 for Temple Schedule & Timings, 3 for Nearby Seva & Facilities, 4 for Emergency SOS, or hold the button to speak.',
+    };
+    return {
+      sessionId: input.sessionId,
+      state: 'menu',
+      language: lang,
+      prompt: prompts[lang] || prompts.en,
+      audioBase64: null,
+      mediaType: 'audio/mpeg',
+      options: [
+        { key: '1', label: lang === 'mr' ? '१ · गर्दीची माहिती' : lang === 'hi' ? '1 · भीड़ की स्थिति' : '1 · Live Crowd Status' },
+        { key: '2', label: lang === 'mr' ? '२ · दर्शन व आरती वेळ' : lang === 'hi' ? '2 · दर्शन समय' : '2 · Temple Schedule' },
+        { key: '3', label: lang === 'mr' ? '३ · जवळील सुविधा' : lang === 'hi' ? '3 · पास की सुविधाएं' : '3 · Nearby Seva & Facilities' },
+        { key: '4', label: lang === 'mr' ? '४ · आपत्कालीन SOS' : lang === 'hi' ? '4 · आपातकालीन SOS' : '4 · Emergency SOS' },
+      ],
+      endsSession: false,
+    };
+  },
+
+  async press(input: { sessionId: string; key: string; latitude?: number | null; longitude?: number | null; turnId?: string }): Promise<IVRTurn> {
+    const lang: Language = 'en';
+    if (input.key === '1') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'Gate 3 is currently experiencing heavy crowd (82% capacity). Quietest zone is Mukhdarshan queue (15 min wait).',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Refresh Crowd' },
+          { key: '2', label: '2 · Temple Schedule' },
+          { key: '3', label: '3 · Nearby Seva' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [crowdWidget()],
+        endsSession: false,
+      };
+    }
+    if (input.key === '2') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'Shri Vitthal Mandir Pandharpur is open 24 Hours for Ashadhi Ekadashi 2026. Mukhdarshan queue is 15-20 min. Padsparsha queue is 2-3 hrs standard.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Crowd Status' },
+          { key: '3', label: '3 · Nearby Facilities' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [{
+          type: 'temple_info',
+          data: {
+            title: 'Shri Vitthal Rukmini Mandir 2026 Schedule',
+            timings: 'Open 24 Hours (Ashadhi Ekadashi Special)',
+            rituals: ['Kakad Aarti · 4:30 AM', 'Mahapuja · 12:00 AM Midnight', 'Shej Aarti · 11:30 PM'],
+            events: ['Mukhdarshan Queue (15-20 min)', 'Padsparsha Sanctum Queue (2-3 hrs)'],
+            description: 'North entrance token passes available at Shri Sant Dnyaneshwar Darshan Mandap.',
+          },
+        }],
+        endsSession: false,
+      };
+    }
+    if (input.key === '3') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'The nearest facility is Wari Medical Center (0.8 km away). Water stations and Annachhatra food distribution are available along the palkhi route.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Live Crowd Status' },
+          { key: '2', label: '2 · Temple Schedule' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [facilityWidget()],
+        endsSession: false,
+      };
+    }
+    if (input.key === '4') {
+      return {
+        sessionId: input.sessionId,
+        state: 'sos_confirm',
+        language: lang,
+        prompt: 'Emergency SOS requested. Wari Control Room and Solapur Rural Police have been notified. Stay calm near your location.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '0', label: '0 · Main Menu' },
+        ],
+        widgets: [{
+          type: 'sos',
+          data: {
+            status: 'ACTIVATED',
+            message: 'Emergency SOS activated. Control room helpline 1800-233-1000 notified.',
+            controlRoomStatus: 'Connected · Dispatch Active',
+            timestamp: now(),
+          },
+        }],
+        endsSession: false,
+      };
+    }
+    return mockIvrApi.start({ sessionId: input.sessionId, language: lang });
+  },
+
+  async speak(input: { sessionId: string; audio: Blob; fileName?: string; turnId?: string }): Promise<IVRTurn> {
+    return {
+      sessionId: input.sessionId,
+      state: 'speech',
+      language: 'en',
+      prompt: 'I understand your query. The nearest water point and medical assistance is located 500m ahead near Gate 2.',
+      audioBase64: null,
+      mediaType: 'audio/mpeg',
+      options: [
+        { key: '0', label: '0 · Back to Menu' },
+      ],
+      widgets: [facilityWidget()],
+      endsSession: false,
     };
   },
 };

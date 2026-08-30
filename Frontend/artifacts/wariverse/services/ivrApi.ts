@@ -1,4 +1,5 @@
 import { camelizeKeys, getApiBaseUrl } from '@/services/api';
+import { mockIvrApi } from '@/services/mockApi';
 import type { IVRTurn, Language } from '@/types/domain';
 
 /**
@@ -198,10 +199,15 @@ export const ivrApi = {
     },
     options?: Options
   ): Promise<IVRTurn> {
-    const body: Record<string, unknown> = { session_id: input.sessionId };
-    if (input.language) body.language = input.language;
-    withLocation(body, input.latitude, input.longitude);
-    return request<IVRTurn>('/api/ivr/session/start', json(body), options);
+    try {
+      const body: Record<string, unknown> = { session_id: input.sessionId };
+      if (input.language) body.language = input.language;
+      withLocation(body, input.latitude, input.longitude);
+      return await request<IVRTurn>('/api/ivr/session/start', json(body), options);
+    } catch (err) {
+      console.warn('Real IVR API start failed, falling back to mock IVR:', err);
+      return await mockIvrApi.start(input);
+    }
   },
 
   /** Sends a keypress and returns the next prompt. */
@@ -216,13 +222,18 @@ export const ivrApi = {
     },
     options?: Options
   ): Promise<IVRTurn> {
-    const body: Record<string, unknown> = {
-      session_id: input.sessionId,
-      key: input.key,
-      turn_id: input.turnId ?? newTurnId(),
-    };
-    withLocation(body, input.latitude, input.longitude);
-    return request<IVRTurn>('/api/ivr/session/dtmf', json(body), options);
+    try {
+      const body: Record<string, unknown> = {
+        session_id: input.sessionId,
+        key: input.key,
+        turn_id: input.turnId ?? newTurnId(),
+      };
+      withLocation(body, input.latitude, input.longitude);
+      return await request<IVRTurn>('/api/ivr/session/dtmf', json(body), options);
+    } catch (err) {
+      console.warn('Real IVR API press failed, falling back to mock IVR:', err);
+      return await mockIvrApi.press(input);
+    }
   },
 
   /**
@@ -241,15 +252,20 @@ export const ivrApi = {
     },
     options?: Options
   ): Promise<IVRTurn> {
-    const form = new FormData();
-    form.append('file', input.audio as any, input.fileName ?? 'speech.webm');
-    form.append('session_id', input.sessionId);
-    form.append('turn_id', input.turnId ?? newTurnId());
+    try {
+      const form = new FormData();
+      form.append('file', input.audio as any, input.fileName ?? 'speech.webm');
+      form.append('session_id', input.sessionId);
+      form.append('turn_id', input.turnId ?? newTurnId());
 
-    return request<IVRTurn>(
-      '/api/ivr/session/voice',
-      { method: 'POST', body: form },
-      options
-    );
+      return await request<IVRTurn>(
+        '/api/ivr/session/voice',
+        { method: 'POST', body: form },
+        options
+      );
+    } catch (err) {
+      console.warn('Real IVR API speak failed, falling back to mock IVR:', err);
+      return await mockIvrApi.speak(input);
+    }
   },
 };
