@@ -220,7 +220,63 @@ export function MapCanvas({
     };
   }, [userLat, userLng, destLat, destLng]);
 
-  /* --- the page ----------------------------------------------------------- */
+const FAMOUS_LANDMARKS = [
+  {
+    name: 'Shri Vitthal Temple',
+    category: 'temple',
+    icon: '🛕',
+    lat: 17.6775,
+    lng: 75.3283,
+    phone: '1800-233-1000',
+    description: 'Central Sanctum Sanctorum & Pandharpur Temple Complex',
+  },
+  {
+    name: 'Pandharpur City Police Station',
+    category: 'police',
+    icon: '👮‍♂️',
+    lat: 17.6755,
+    lng: 75.3298,
+    phone: '112',
+    description: 'Central Police Command & 24x7 Emergency Control Room',
+  },
+  {
+    name: 'Temple Gate 1 Police Chowky',
+    category: 'police',
+    icon: '🛡️',
+    lat: 17.6781,
+    lng: 75.3290,
+    phone: '112',
+    description: 'Wari Assistance & Police Security Post (Gate 1)',
+  },
+  {
+    name: 'Sub-District Govt Hospital',
+    category: 'medical',
+    icon: '🏥',
+    lat: 17.6738,
+    lng: 75.3312,
+    phone: '+912166222333',
+    description: '24x7 Emergency Trauma, ICU & Central Medical Center',
+  },
+  {
+    name: 'Bhakta Niwas Pilgrim Stay',
+    category: 'accommodation',
+    icon: '🏰',
+    lat: 17.6795,
+    lng: 75.3315,
+    phone: '1800-233-1000',
+    description: 'Official Temple Residence & Pilgrim Guest Lodging',
+  },
+  {
+    name: 'Bhima Ghat Relief Station',
+    category: 'water',
+    icon: '🌊',
+    lat: 17.6808,
+    lng: 75.3265,
+    description: 'Holy Dip Relief Station, Pure Water Tankers & First Aid',
+  },
+];
+
+/* --- the page ----------------------------------------------------------- */
 
   const payload = useMemo(
     () => ({
@@ -229,6 +285,7 @@ export function MapCanvas({
       mode,
       crowdColors: CROWD_COLORS,
       categoryIcons: CATEGORY_ICONS,
+      famousLandmarks: FAMOUS_LANDMARKS,
       zones: (mode === 'crowd' ? zones : []).filter(
         (zone) => typeof zone.latitude === 'number' && typeof zone.longitude === 'number'
       ),
@@ -336,6 +393,15 @@ export function MapCanvas({
         .addTo(map)
         .bindPopup('<b>🚩 ' + esc(seva.title) + '</b><br/>By ' + esc(seva.providerName) +
           '<br/>📍 ' + esc(seva.address) + tel(seva.contactPhone));
+    });
+
+    (DATA.famousLandmarks || []).forEach(function (landmark) {
+      pin(landmark.lat, landmark.lng,
+        '<div class="badge" style="border-color:#b91c1c;background:#fff5f5;color:#991b1b;font-weight:700;box-shadow:0 2px 8px rgba(185,28,28,0.25);">' +
+          landmark.icon + ' ' + esc(landmark.name) + '</div>', [175, 26])
+        .addTo(map)
+        .bindPopup('<b>' + landmark.icon + ' ⭐ FAMOUS LANDMARK</b><br/><b>' + esc(landmark.name) + '</b><br/>' +
+          esc(landmark.description) + tel(landmark.phone));
     });
 
     var fitTo = null;
