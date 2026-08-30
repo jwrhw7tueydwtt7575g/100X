@@ -7,6 +7,7 @@ flaky connection from advancing the menu twice for one tap.
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -207,6 +208,101 @@ async def test_a_partial_warm_is_retried_next_time(redis, monkeypatch) -> None:
     assert result.synthesised >= 1
     # ...and the run is not recorded as complete, so the next boot tries again.
     assert ivr_audio_cache.MANIFEST_KEY not in redis.data
+
+
+async def test_a_rate_limit_is_waited_out_not_given_up_on(
+    redis, monkeypatch
+) -> None:
+    """Warming asks for two dozen clips at once, so 429 is routine.
+
+    Observed live: the startup warm consumed a modest account's per-minute quota
+    and live `/api/voice/speak` calls started failing behind it.
+    """
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test", raising=False)
+    monkeypatch.setattr(ivr_audio_cache, "RATE_LIMIT_BACKOFF_SECONDS", 0.0)
+    attempts: dict[str, int] = {}
+
+    async def rate_limited_once(text: str, language: str) -> bytes:
+        attempts[text] = attempts.get(text, 0) + 1
+        if attempts[text] == 1:
+            raise RuntimeError("openai tts 429: rate limit reached")
+        return b"mp3"
+
+    monkeypatch.setattr(tts, "synthesize_openai_bytes", rate_limited_once)
+    result = await ivr_audio_cache.warm_static_prompts()
+
+    assert result.failed == 0, "a 429 must be retried, not counted as a loss"
+    assert result.synthesised == result.prompts
+    assert all(count == 2 for count in attempts.values())
+
+
+async def test_the_providers_own_retry_delay_is_used(redis, monkeypatch) -> None:
+    """OpenAI says "try again in 20s"; guessing 2s just spends another request."""
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test", raising=False)
+    slept: list[float] = []
+
+    async def record_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(ivr_audio_cache.asyncio, "sleep", record_sleep)
+
+    once: dict[str, int] = {}
+
+    async def rate_limited_once(text: str, language: str) -> bytes:
+        once[text] = once.get(text, 0) + 1
+        if once[text] == 1:
+            raise tts.SynthesisError("openai tts 429: rate limit", retry_after=20.0)
+        return b"mp3"
+
+    monkeypatch.setattr(tts, "synthesize_openai_bytes", rate_limited_once)
+    await ivr_audio_cache.warm_static_prompts()
+
+    assert slept, "a rate limit must be waited out"
+    # Within the jitter band around 20s, not the 2s default.
+    assert all(17.0 <= s <= 25.0 for s in slept), slept
+
+
+async def test_a_sustained_rate_limit_abandons_the_warm(redis, monkeypatch) -> None:
+    """The cache is an optimisation; the live call is the product.
+
+    On OpenAI's unpaid tier `tts-1` allows three requests a minute. Grinding
+    through two dozen prompts holds the quota at zero for minutes while pilgrims
+    wait on `/api/voice/speak`, so the warm yields instead.
+    """
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test", raising=False)
+    # Bind the real sleep before patching: the lambda would otherwise call the
+    # patched name and recurse into itself.
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ivr_audio_cache.asyncio, "sleep", lambda _: real_sleep(0))
+    calls: list[str] = []
+
+    async def always_limited(text: str, language: str) -> bytes:
+        calls.append(text)
+        raise tts.SynthesisError("openai tts 429: rate limit reached", retry_after=20.0)
+
+    monkeypatch.setattr(tts, "synthesize_openai_bytes", always_limited)
+    result = await ivr_audio_cache.warm_static_prompts()
+
+    assert result.skipped == "rate_limited"
+    # It gives up rather than attempting all 22 prompts four times each.
+    assert len(calls) < result.prompts, f"{len(calls)} calls for {result.prompts} prompts"
+    assert ivr_audio_cache.MANIFEST_KEY not in redis.data, "must re-warm once quota returns"
+
+
+async def test_a_permanent_error_is_not_retried_forever(redis, monkeypatch) -> None:
+    """Only rate limits are worth waiting on; a bad request never improves."""
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test", raising=False)
+    calls: list[str] = []
+
+    async def always_400(text: str, language: str) -> bytes:
+        calls.append(text)
+        raise RuntimeError("openai tts 400: invalid voice")
+
+    monkeypatch.setattr(tts, "synthesize_openai_bytes", always_400)
+    result = await ivr_audio_cache.warm_static_prompts()
+
+    assert result.failed == result.prompts
+    assert len(calls) == result.prompts, "one attempt each, no retry storm"
 
 
 async def test_warming_is_skipped_without_a_key(redis, monkeypatch) -> None:

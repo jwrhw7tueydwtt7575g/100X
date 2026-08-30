@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -45,6 +46,30 @@ GOOGLE_LANGUAGES = ("mr",)
 
 class SynthesisError(RuntimeError):
     """No provider could produce audio for this request."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        # Seconds the provider asked us to wait, when it said so. A 429 from
+        # OpenAI carries both a `Retry-After` header and a "try again in 20s" in
+        # the body; guessing a backoff when it has told us the answer just means
+        # retrying too early and burning another request against the limit.
+        self.retry_after = retry_after
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    raw = response.headers.get("retry-after")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    # OpenAI does not always send the header, but the message reliably contains
+    # "Please try again in 20s" / "in 1.5s".
+    match = re.search(r"try again in ([\d.]+)\s*(ms|s)\b", response.text, re.I)
+    if match:
+        value = float(match.group(1))
+        return value / 1000 if match.group(2).lower() == "ms" else value
+    return None
 
 
 def cache_key(text: str, language: str, provider: str = "") -> str:
@@ -208,8 +233,12 @@ async def synthesize_openai(text: str, language: str) -> AsyncIterator[bytes]:
             },
         ) as response:
             if response.status_code != 200:
-                body = (await response.aread()).decode("utf-8", "replace")[:200]
-                raise SynthesisError(f"openai tts {response.status_code}: {body}")
+                await response.aread()
+                body = response.text[:200].replace("\n", " ")
+                raise SynthesisError(
+                    f"openai tts {response.status_code}: {body}",
+                    retry_after=_retry_after(response),
+                )
             async for chunk in response.aiter_bytes():
                 if chunk:
                     chunks.append(chunk)
@@ -222,6 +251,43 @@ async def synthesize_openai(text: str, language: str) -> AsyncIterator[bytes]:
 
 async def synthesize_openai_bytes(text: str, language: str) -> bytes:
     return b"".join([chunk async for chunk in synthesize_openai(text, language)])
+
+
+# --- provider selection -----------------------------------------------------
+#
+# `/api/voice/speak` routes through these rather than calling a provider
+# directly, so `VOICE_OPENAI_ONLY` switches the whole app between "OpenAI for
+# everything" and the original ElevenLabs/Google split without either path
+# growing a copy of the other's logic. The in-app IVR always calls the OpenAI
+# functions directly and is unaffected either way.
+
+
+def active_provider(language: str) -> str:
+    return OPENAI_PROVIDER if settings.voice_openai_only else provider_for(language)
+
+
+def active_is_configured(language: str) -> bool:
+    return openai_configured() if settings.voice_openai_only else is_configured(language)
+
+
+async def cached_active(text: str, language: str) -> bytes | None:
+    if settings.voice_openai_only:
+        return await cached(text, language, OPENAI_PROVIDER)
+    return await cached(text, language)
+
+
+async def synthesize_active(text: str, language: str) -> AsyncIterator[bytes]:
+    stream = (
+        synthesize_openai(text, language)
+        if settings.voice_openai_only
+        else synthesize(text, language)
+    )
+    async for chunk in stream:
+        yield chunk
+
+
+async def synthesize_active_bytes(text: str, language: str) -> bytes:
+    return b"".join([chunk async for chunk in synthesize_active(text, language)])
 
 
 async def _elevenlabs(text: str, language: str) -> AsyncIterator[bytes]:

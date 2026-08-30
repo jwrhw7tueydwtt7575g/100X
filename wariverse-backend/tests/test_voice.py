@@ -66,6 +66,10 @@ def keys(monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "sk-key", raising=False)
     monkeypatch.setattr(settings, "elevenlabs_api_key", "el-key", raising=False)
     monkeypatch.setattr(settings, "google_tts_api_key", "g-key", raising=False)
+    # These tests cover the multi-provider chain — Deepgram's fallback, the
+    # ElevenLabs/WaveNet language split. Production runs OpenAI-only (see
+    # test_voice_openai_only.py); the fallback code stays exercised here.
+    monkeypatch.setattr(settings, "voice_openai_only", False, raising=False)
 
 
 @pytest.fixture
@@ -388,6 +392,7 @@ async def test_unsupported_language_is_rejected(client: AsyncClient, keys) -> No
 async def test_503_when_the_language_has_no_provider(
     client: AsyncClient, monkeypatch
 ) -> None:
+    monkeypatch.setattr(settings, "voice_openai_only", False, raising=False)
     monkeypatch.setattr(settings, "elevenlabs_api_key", None, raising=False)
     response = await client.post(
         "/api/voice/speak", json={"text": "hello", "language": "en"}

@@ -1,4 +1,11 @@
-"""Speech to text: Deepgram Nova-2, falling back to OpenAI Whisper.
+"""Speech to text.
+
+With `VOICE_OPENAI_ONLY` on (the default), OpenAI Whisper is the only provider:
+one key powers the whole voice pipeline and Whisper covers all three languages.
+Turn it off to restore the two-provider chain described below.
+
+--- two-provider mode -------------------------------------------------------
+Deepgram Nova-2, falling back to OpenAI Whisper.
 
 Two providers because the pilgrim is already holding the phone up in a crowd
 having said their piece — a provider outage should cost latency, not the
@@ -94,9 +101,14 @@ async def transcribe(
     by default because it handles Marathi reliably and Deepgram's Nova-2
     language list has not always included it.
     """
-    order = (
-        ("deepgram", "whisper") if prefer == "deepgram" else ("whisper", "deepgram")
-    )
+    if settings.voice_openai_only:
+        # OpenAI is the only provider in the chain. Whisper handles all three
+        # languages, so there is nothing for Deepgram to rescue.
+        order: tuple[str, ...] = ("whisper",)
+    else:
+        order = (
+            ("deepgram", "whisper") if prefer == "deepgram" else ("whisper", "deepgram")
+        )
     providers = {"deepgram": _deepgram, "whisper": _whisper}
     keys = {"deepgram": settings.deepgram_api_key, "whisper": settings.openai_api_key}
 
@@ -132,7 +144,7 @@ async def _deepgram(
     else:
         params["detect_language"] = "true"
 
-    async with httpx.AsyncClient(verify=False, timeout=settings.voice_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=settings.voice_timeout_seconds) as client:
         response = await client.post(
             DEEPGRAM_URL,
             params=params,
@@ -170,7 +182,7 @@ async def _whisper(
     if language_hint in SUPPORTED_LANGUAGES:
         data["language"] = language_hint
 
-    async with httpx.AsyncClient(verify=False, timeout=settings.voice_timeout_seconds) as client:
+    async with httpx.AsyncClient(timeout=settings.voice_timeout_seconds) as client:
         response = await client.post(
             WHISPER_URL,
             headers={"Authorization": f"Bearer {settings.openai_api_key}"},

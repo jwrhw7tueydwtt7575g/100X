@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import random
 from dataclasses import dataclass
 
 import structlog
@@ -61,8 +62,18 @@ LOCK_TTL_SECONDS = 300
 
 # OpenAI is comfortable with far more, but there is nothing to gain by finishing
 # a background warm in four seconds instead of twelve, and a burst of parallel
-# synthesis requests is exactly what trips a shared rate limit.
-MAX_CONCURRENCY = 3
+# synthesis requests is exactly what trips a shared rate limit. Two, because
+# three still exhausted a modest account's per-minute quota in testing and the
+# live endpoint started failing behind it.
+MAX_CONCURRENCY = 2
+
+# A 429 during warming is expected, not exceptional: this asks for two dozen
+# clips in a row. Wait it out rather than burning the prompt for the whole run.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_BACKOFF_SECONDS = 2.0
+# However long the provider asks for, never hold a background task longer than
+# this — a warm that sleeps for minutes is just a slow leak of a worker.
+MAX_BACKOFF_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -165,6 +176,11 @@ class WarmResult:
     reused: int = 0
     failed: int = 0
     skipped: str | None = None
+    # Set when a sustained rate limit ends the run. A flag rather than an
+    # exception through `asyncio.gather`, which propagates the first error but
+    # leaves its siblings running — they then outlive the loop and raise
+    # "Event loop is closed" on the way out.
+    abandoned: bool = False
 
     @property
     def ran(self) -> bool:
@@ -216,13 +232,34 @@ async def warm_static_prompts(*, force: bool = False) -> WarmResult:
     semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
     async def one(prompt: StaticPrompt) -> None:
+        # Checked here as well as inside, so prompts still queued behind the
+        # semaphore never start once the run has been abandoned.
+        if result.abandoned:
+            return
         async with semaphore:
+            if result.abandoned:
+                return
             await _warm_prompt(prompt, result)
 
     try:
         await asyncio.gather(*(one(prompt) for prompt in prompts))
 
-        if result.failed == 0:
+        if result.abandoned:
+            result.skipped = "rate_limited"
+            log.warning(
+                "ivr_audio_warm_abandoned",
+                reason="provider rate limit; leaving the remaining quota for live calls",
+                synthesised=result.synthesised,
+                remaining=result.prompts - result.synthesised - result.reused,
+                detail=(
+                    "OpenAI's unpaid tier allows 3 tts-1 requests per minute, "
+                    "which a bulk warm cannot use without starving "
+                    "/api/voice/speak. Add a payment method or set "
+                    "IVR_WARM_AUDIO_ON_STARTUP=false."
+                ),
+            )
+
+        if result.failed == 0 and result.skipped is None:
             # Recorded only on a clean run, so a partial warm is retried on the
             # next boot instead of being remembered as complete.
             await client.set(MANIFEST_KEY, fingerprint,
@@ -252,24 +289,19 @@ async def _warm_prompt(prompt: StaticPrompt, result: WarmResult) -> None:
 
     try:
         already = await tts.cached(prompt.text, primary, tts.OPENAI_PROVIDER)
-        audio = already or await tts.synthesize_openai_bytes(prompt.text, primary)
-    except Exception as exc:  # noqa: BLE001 — one bad prompt must not stop the rest
-        log.warning(
-            "ivr_audio_warm_failed",
-            digest=prompt.digest,
-            language=primary,
-            error=str(exc),
-        )
-        result.failed += 1
-        return
+    except Exception:  # noqa: BLE001 — a cache read failure just means a miss
+        already = None
 
-    if already:
-        result.reused += 1
+    audio = already
+    if audio is None:
+        audio = await _synthesize_patiently(prompt, primary, result)
     else:
-        result.synthesised += 1
+        result.reused += 1
 
     if not audio:
         return
+    if already is None:
+        result.synthesised += 1
 
     # Re-store under every tag, including the primary: `synthesize_openai()`
     # writes with the ordinary 24-hour TTL, and these deserve the long one.
@@ -281,6 +313,58 @@ async def _warm_prompt(prompt: StaticPrompt, result: WarmResult) -> None:
             tts.OPENAI_PROVIDER,
             ttl=settings.ivr_static_audio_ttl_seconds,
         )
+
+
+async def _synthesize_patiently(
+    prompt: StaticPrompt, language: str, result: WarmResult
+) -> bytes | None:
+    """Synthesise one prompt, backing off when the provider says slow down.
+
+    Warming asks for the whole menu at once, which is enough to exhaust the
+    per-minute limit on a modest OpenAI account — observed live, where the warm
+    consumed the quota and live `/api/voice/speak` calls started failing behind
+    it. Backing off keeps a background nicety from starving the thing pilgrims
+    are actually waiting on.
+    """
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return await tts.synthesize_openai_bytes(prompt.text, language)
+        except Exception as exc:  # noqa: BLE001 — one bad prompt must not stop the rest
+            rate_limited = "429" in str(exc) or "rate limit" in str(exc).lower()
+
+            if rate_limited and attempt < RATE_LIMIT_RETRIES:
+                # Prefer the provider's own answer. OpenAI replies "try again in
+                # 20s" on a 3-requests-per-minute tier; an invented 2-second
+                # backoff just spends another request against the same limit.
+                asked = getattr(exc, "retry_after", None)
+                delay = (
+                    float(asked)
+                    if asked
+                    else RATE_LIMIT_BACKOFF_SECONDS * (2**attempt)
+                )
+                # Jittered so several workers do not resynchronise.
+                await asyncio.sleep(
+                    min(delay, MAX_BACKOFF_SECONDS) * (0.9 + random.random() / 5)
+                )
+                continue
+
+            log.warning(
+                "ivr_audio_warm_failed",
+                digest=prompt.digest,
+                language=language,
+                rate_limited=rate_limited,
+                error=str(exc)[:200],
+            )
+            result.failed += 1
+            if rate_limited:
+                # Out of retries against a rate limit means the account simply
+                # cannot serve a bulk warm right now. Pressing on would hold the
+                # quota at zero for minutes while pilgrims wait on live calls,
+                # which is precisely backwards: the cache is an optimisation,
+                # the call is the product.
+                result.abandoned = True
+            return None
+    return None
 
 
 # --- startup ----------------------------------------------------------------

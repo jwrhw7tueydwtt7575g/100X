@@ -215,6 +215,11 @@ export type LocationState = {
   latitude: number | null;
   longitude: number | null;
   permission: 'unknown' | 'granted' | 'denied';
+  /**
+   * True when these are the Pandharpur temple coordinates standing in for a fix
+   * we could not get. The map must not claim "you are here" over them.
+   */
+  isFallback?: boolean;
 };
 
 export type Copy = {

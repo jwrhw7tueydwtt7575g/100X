@@ -1,11 +1,13 @@
 import { Feather } from '@expo/vector-icons';
 import React from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { PhoneBadge } from '@/components/PhoneBadge';
+import { deriveWalkingSteps } from '@/services/directions';
 import colors from '@/constants/colors';
 import type { CrowdDensityWidget, EscalationWidget, FacilityWidget, ForecastWidget, Language, LostFoundWidget, RouteWidget, SOSWidget, TempleInfoWidget, ToolWidget } from '@/types/domain';
 
-const iconFor: Record<string, keyof typeof Feather.glyphMap> = { medical: 'heart', water: 'droplet', toilet: 'grid', rest: 'coffee', food: 'shopping-bag', accommodation: 'home' };
-const labelFor: Record<string, string> = { medical: 'Medical', water: 'Drinking water', toilet: 'Toilet', rest: 'Rest shelter', food: 'Food', accommodation: 'Accommodation' };
+const iconFor: Record<string, keyof typeof Feather.glyphMap> = { medical: 'heart', police: 'shield', water: 'droplet', toilet: 'grid', rest: 'coffee', food: 'shopping-bag', accommodation: 'home' };
+const labelFor: Record<string, string> = { medical: 'Medical', police: 'Police Outpost & Chowky', water: 'Drinking water', toilet: 'Toilet', rest: 'Rest shelter', food: 'Food', accommodation: 'Accommodation' };
 
 export function ToolWidgetRenderer({
   widget,
@@ -53,8 +55,34 @@ function SmallButton({ label, icon, onPress, danger = false }: { label: string; 
 }
 
 function CrowdCard({ data, language, onViewMap }: { data: CrowdDensityWidget['data']; language: Language; onViewMap?: () => void }) {
-  const status = language === 'mr' ? 'जास्त' : language === 'hi' ? 'ज़्यादा' : 'High';
-  return <Shell tone="orange"><CardHeader icon="users" eyebrow="Live crowd" title={data.zoneName} /><View style={styles.crowdRow}><View><Text style={styles.metric}>{data.density}%</Text><Text style={styles.metricLabel}>{language === 'mr' ? 'गर्दीची पातळी' : language === 'hi' ? 'भीड़ का स्तर' : 'Crowd level'} · {status}</Text></View><View style={styles.meter}><View style={[styles.meterFill, { width: `${data.density}%` }]} /><View style={styles.meterDot} /></View></View><Text style={styles.updated}>Updated {data.updatedAt}</Text>{onViewMap && <SmallButton label={language === 'mr' ? 'नकाशावर पहा' : language === 'hi' ? 'नक्शे पर देखें' : 'View on map'} icon="map" onPress={onViewMap} />}</Shell>;
+  const statusLabel =
+    data.status === 'LOW'
+      ? (language === 'mr' ? 'कमी (जलद)' : language === 'hi' ? 'कम (त्वरित)' : 'Low (Fast Queue)')
+      : data.status === 'MODERATE'
+      ? (language === 'mr' ? 'मध्यम' : language === 'hi' ? 'मध्यम' : 'Moderate')
+      : data.status === 'VERY_HIGH'
+      ? (language === 'mr' ? 'अतिशय जास्त' : language === 'hi' ? 'अत्यधिक' : 'Very High')
+      : (language === 'mr' ? 'जास्त' : language === 'hi' ? 'ज़्यादा' : 'High');
+
+  const tone = data.status === 'LOW' ? 'teal' : data.status === 'MODERATE' ? 'yellow' : 'orange';
+
+  return (
+    <Shell tone={tone}>
+      <CardHeader icon="users" eyebrow="Live crowd" title={data.zoneName} />
+      <View style={styles.crowdRow}>
+        <View>
+          <Text style={styles.metric}>{data.density}%</Text>
+          <Text style={styles.metricLabel}>{language === 'mr' ? 'गर्दीची पातळी' : language === 'hi' ? 'भीड़ का स्तर' : 'Crowd level'} · {statusLabel}</Text>
+        </View>
+        <View style={styles.meter}>
+          <View style={[styles.meterFill, { width: `${Math.min(100, Math.max(5, data.density))}%` }]} />
+          <View style={styles.meterDot} />
+        </View>
+      </View>
+      <Text style={styles.updated}>Updated {data.updatedAt}</Text>
+      {onViewMap && <SmallButton label={language === 'mr' ? 'नकाशावर पहा' : language === 'hi' ? 'नक्शे पर देखें' : 'View on map'} icon="map" onPress={onViewMap} />}
+    </Shell>
+  );
 }
 
 function ForecastCard({ data }: { data: ForecastWidget['data'] }) {
@@ -77,6 +105,10 @@ function RouteCard({ data, language, onViewRoute, locationPermission, onRequestL
         <View><Text style={styles.metaLabel}>DISTANCE</Text><Text style={styles.metaValue}>{data.distance ?? '—'}</Text></View>
         <View><Text style={styles.metaLabel}>WALK</Text><Text style={styles.metaValue}>{data.estimatedTime ?? '—'}</Text></View>
       </View>
+      <WalkingSteps
+        coordinates={data.routeCoordinates}
+        destinationLabel={data.destination.label ?? 'the destination'}
+      />
       {locationPermission !== 'granted' && (
         <View style={styles.gpsBanner}>
           <Feather name="map-pin" size={14} color={colors.light.accentForeground} />
@@ -92,6 +124,47 @@ function RouteCard({ data, language, onViewRoute, locationPermission, onRequestL
       {data.avoidAreas?.map((area) => <Text key={area} style={styles.avoid}><Feather name="alert-circle" size={13} color={colors.light.destructive} /> Avoid {area}</Text>)}
       {onViewRoute && <SmallButton label={language === 'mr' ? 'रस्ता पहा' : language === 'hi' ? 'रास्ता देखें' : 'View route'} icon="map" onPress={onViewRoute} />}
     </Shell>
+  );
+}
+
+/**
+ * Step-by-step directions along the drawn route.
+ *
+ * Derived from the polyline rather than fetched: the backend sends coordinates
+ * but no instructions. Collapsed to at most six legs — a pilgrim walking in a
+ * crowd reads the next two, not a list of twenty.
+ */
+function WalkingSteps({
+  coordinates,
+  destinationLabel,
+}: {
+  coordinates?: { latitude: number; longitude: number }[];
+  destinationLabel: string;
+}) {
+  const steps = React.useMemo(
+    () => deriveWalkingSteps(coordinates ?? [], destinationLabel).slice(0, 6),
+    [coordinates, destinationLabel]
+  );
+  if (steps.length === 0) return null;
+
+  return (
+    <View style={styles.steps}>
+      <Text style={styles.stepsHeading}>STEP BY STEP</Text>
+      {steps.map((step, index) => (
+        <View key={`${step.instruction}-${index}`} style={styles.step}>
+          <View style={styles.stepIcon}>
+            <Feather name={step.icon} size={13} color={colors.light.teal} />
+          </View>
+          <Text style={styles.stepText} numberOfLines={2}>
+            {step.instruction}
+          </Text>
+          <View style={styles.stepMeta}>
+            <Text style={styles.stepDistance}>{step.distance}</Text>
+            <Text style={styles.stepEta}>{step.eta}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -144,8 +217,14 @@ function FacilityCard({ data, onViewMap, onViewRoute, locationPermission, onRequ
           )}
         </View>
       )}
+      {/* The number gets a badge of its own rather than being squeezed into a
+          button label, where a long one was truncated to "Call 1800-233-…". */}
+      {phoneNum ? (
+        <View style={{ marginTop: 10 }}>
+          <PhoneBadge number={phoneNum} label={data.providerName ? `Call ${data.providerName}` : 'Call'} urgent={data.category === 'medical'} />
+        </View>
+      ) : null}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-        {phoneNum ? <SmallButton label={phoneNum.length > 5 ? `Call ${phoneNum}` : 'Call'} icon="phone-call" onPress={handleCall} /> : null}
         <SmallButton label="Directions" icon="navigation" onPress={handleDirections} />
         {onViewMap ? <SmallButton label="View on map" icon="map" onPress={onViewMap} /> : null}
       </View>
@@ -239,6 +318,40 @@ const styles = StyleSheet.create({
   metaLabel: { color: colors.light.mutedForeground, fontFamily: 'Inter_600SemiBold', fontSize: 9, letterSpacing: 1 },
   metaValue: { color: colors.light.foreground, fontFamily: 'Inter_700Bold', fontSize: 13, marginTop: 2 },
   avoid: { color: colors.light.destructive, fontFamily: 'Inter_500Medium', fontSize: 11, marginTop: 12 },
+  steps: {
+    marginTop: 14,
+    borderTopWidth: 1.5,
+    borderTopColor: colors.light.border,
+    paddingTop: 11,
+    gap: 8,
+  },
+  stepsHeading: {
+    color: colors.light.mutedForeground,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 9,
+    letterSpacing: 1,
+  },
+  step: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  stepIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.light.tealSoft,
+    borderWidth: 1.5,
+    borderColor: colors.light.teal,
+  },
+  stepText: {
+    flex: 1,
+    color: colors.light.foreground,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  stepMeta: { alignItems: 'flex-end' },
+  stepDistance: { color: colors.light.foreground, fontFamily: 'Inter_700Bold', fontSize: 11 },
+  stepEta: { color: colors.light.mutedForeground, fontFamily: 'Inter_400Regular', fontSize: 10 },
   facilityDistance: { color: colors.light.foreground, fontFamily: 'Inter_700Bold', fontSize: 21 },
   muted: { color: colors.light.inkSoft, fontFamily: 'Inter_400Regular', fontSize: 13 },
   available: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8 },

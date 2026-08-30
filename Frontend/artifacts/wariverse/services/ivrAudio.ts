@@ -20,6 +20,9 @@
  * place to swap.)
  */
 
+import { speakOnDevice, stopSpeaking } from '@/services/speechService';
+import type { Language } from '@/types/domain';
+
 type ExpoAvModule = any;
 
 // Declared locally so this file type-checks whether or not @types/node is in
@@ -61,15 +64,18 @@ function dataUri(base64: string, mediaType = 'audio/mpeg'): string {
 /**
  * Play a base64 clip, resolving when it finishes.
  *
- * Resolves rather than rejects on failure: losing the audio must not stop the
- * call. The caller still has the prompt text on screen.
+ * Returns whether audio was actually heard. It never throws — losing the audio
+ * must not stop the call — but the caller needs to know it failed so it can
+ * speak the prompt some other way rather than leaving the pilgrim in silence.
  */
 export async function playBase64(
   base64: string,
   mediaType = 'audio/mpeg',
   options: { speaker?: boolean } = {}
-): Promise<void> {
+): Promise<boolean> {
   await stopPlayback();
+  if (!base64) return false;
+
   const uri = dataUri(base64, mediaType);
   const av = loadExpoAv();
 
@@ -89,29 +95,39 @@ export async function playBase64(
         });
       });
       await stopPlayback();
-      return;
+      return true;
     } catch (error) {
       console.warn('[ivr] native playback failed, falling back to web audio', error);
     }
   }
 
-  if (!isWeb) return;
-
-  try {
-    const audio = new Audio(uri);
-    webAudio = audio;
-    await new Promise<void>((resolve) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => resolve();
-      audio.play().catch(() => resolve());
-    });
-  } catch (error) {
-    console.warn('[ivr] audio playback failed', error);
-  } finally {
-    if (webAudio) {
-      webAudio = null;
+  if (typeof window !== 'undefined' && typeof (window as any).Audio !== 'undefined') {
+    try {
+      const audio = new (window as any).Audio(uri);
+      webAudio = audio;
+      let played = true;
+      await new Promise<void>((resolve) => {
+        audio.onended = () => resolve();
+        audio.onerror = () => {
+          played = false;
+          resolve();
+        };
+        audio.play().catch(() => {
+          played = false;
+          resolve();
+        });
+      });
+      return played;
+    } catch (error) {
+      console.warn('[ivr] audio playback failed', error);
+      return false;
+    } finally {
+      if (webAudio) {
+        webAudio = null;
+      }
     }
   }
+  return false;
 }
 
 export async function stopPlayback(): Promise<void> {
@@ -157,11 +173,19 @@ let tail: Promise<void> = Promise.resolve();
 let generation = 0;
 let queued = 0;
 
-/** Queue a clip. Resolves when *this* clip has finished (or was dropped). */
+/**
+ * Queue a clip. Resolves when *this* clip has finished (or was dropped).
+ *
+ * `text` and `language` are the safety net. If the MP3 will not play — no
+ * `expo-av` on this device, a decode failure, a backend with no OpenAI key and
+ * so no `audioBase64` at all — the prompt is read out by the device's own
+ * voice instead. A menu that sounds robotic is still a menu; a silent one is a
+ * dead phone line.
+ */
 export function enqueuePlayback(
-  base64: string,
+  base64: string | null,
   mediaType = 'audio/mpeg',
-  options: { speaker?: boolean } = {}
+  options: { speaker?: boolean; text?: string; language?: Language } = {}
 ): Promise<void> {
   const mine = generation;
   queued += 1;
@@ -170,7 +194,14 @@ export function enqueuePlayback(
     try {
       // Superseded while it sat in the queue — the caller has moved on.
       if (mine !== generation) return;
-      await playBase64(base64, mediaType, options);
+
+      const heard = base64
+        ? await playBase64(base64, mediaType, options)
+        : false;
+
+      if (!heard && options.text && mine === generation) {
+        await speakOnDevice(options.text, options.language ?? 'en');
+      }
     } finally {
       queued -= 1;
     }
@@ -190,10 +221,14 @@ export function isPlaybackPending(): boolean {
   return queued > 0;
 }
 
-/** Drop anything queued and stop what is playing. */
+/** Drop anything queued and stop what is playing — audio or device speech. */
 export async function clearPlaybackQueue(): Promise<void> {
   generation += 1;
   await stopPlayback();
+  // The fallback path speaks through the device, which `stopPlayback` knows
+  // nothing about. Without this, pressing a key would leave the old prompt
+  // still talking over the new one.
+  await stopSpeaking();
 }
 
 /* -------------------------------------------------------------------------- */

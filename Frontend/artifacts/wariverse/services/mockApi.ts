@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ConversationResponse, Language, ToolWidget } from '@/types/domain';
+import type { ConversationResponse, CrowdStatus, IVRTurn, Language, ToolWidget } from '@/types/domain';
 
 type MessageRequest = { sessionId: string; language: Language; message: string; latitude?: number | null; longitude?: number | null };
 
@@ -34,17 +34,24 @@ const routeWidget: ToolWidget = {
   },
 };
 
-function crowdWidget(): ToolWidget {
+function crowdWidget(
+  zoneId = 'mukhdarshan-queue',
+  zoneName = 'Mukhdarshan Queue',
+  density = 25,
+  status: CrowdStatus = 'LOW',
+  lat = 17.6782,
+  lon = 75.3288
+): ToolWidget {
   return {
     type: 'crowd_density',
     data: {
-      zoneId: 'gate-3',
-      zoneName: 'Gate 3',
-      density: 82,
-      status: 'HIGH',
-      latitude: 18.518,
-      longitude: 73.853,
-      updatedAt: '2 min ago',
+      zoneId,
+      zoneName,
+      density,
+      status,
+      latitude: lat,
+      longitude: lon,
+      updatedAt: 'Just now',
     },
   };
 }
@@ -123,7 +130,7 @@ export const mockConversationApi = {
       query.includes('हॉस्पिटल') || query.includes('पोलीस')
     ) {
       kind = 'facility';
-      let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' = 'medical';
+      let category: 'food' | 'accommodation' | 'water' | 'medical' | 'toilet' | 'rest' | 'police' = 'medical';
       let name = 'Wari Medical Post & First Aid';
       let distStr = '0.8 km';
       let lat = request.latitude ?? 17.6778;
@@ -146,9 +153,11 @@ export const mockConversationApi = {
         category = 'toilet';
         name = 'Public Sanitation & Washroom Block';
         distStr = '0.4 km';
-      } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस')) {
-        name = 'Wari Police Assistance Desk';
-        distStr = '0.6 km';
+      } else if (query.includes('police') || query.includes('पोलीस') || query.includes('पुलिस') || query.includes('chowky') || query.includes('cop') || query.includes('thana')) {
+        category = 'police';
+        name = 'Wari Temple Police Chowky & Outpost';
+        distStr = '0.3 km';
+        phone = '112';
       }
 
       const token = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
@@ -160,6 +169,7 @@ export const mockConversationApi = {
         try {
           const mapboxCategoryMap: Record<string, string> = {
             medical: 'hospital',
+            police: 'police',
             food: 'restaurant',
             accommodation: 'hotel',
             water: 'drinking_water',
@@ -186,24 +196,23 @@ export const mockConversationApi = {
         }
       }
 
-      // Check if user has published custom Sevas in AsyncStorage if mapbox search didn't run or query asks for free/seva
-      if (!mapboxFound || query.includes('free') || query.includes('seva') || query.includes('मोफत') || query.includes('मुफ्त') || query.includes('लंगर')) {
-        try {
-          const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
-          if (storedSevas) {
-            const parsedSevas = JSON.parse(storedSevas) as any[];
-            const matching = parsedSevas.find((s) => s.category === category && s.isActive !== false);
-            if (matching) {
-              name = `${matching.title} (${matching.providerName})`;
-              lat = matching.latitude;
-              lng = matching.longitude;
-              phone = matching.contactPhone;
-              distStr = calcDistanceStr(userLat, userLng, lat, lng);
-            }
+      // Check if user has published custom Sevas in AsyncStorage to include in nearby response
+      try {
+        const storedSevas = await AsyncStorage.getItem('wariverse-my-sevas');
+        if (storedSevas) {
+          const parsedSevas = JSON.parse(storedSevas) as any[];
+          const matchingSevas = parsedSevas.filter((s) => s.category === category && s.isActive !== false);
+          if (matchingSevas.length > 0) {
+            const topSeva = matchingSevas[0];
+            name = `${topSeva.title} (Free ${topSeva.providerName} Seva)`;
+            lat = topSeva.latitude;
+            lng = topSeva.longitude;
+            phone = topSeva.contactPhone;
+            distStr = calcDistanceStr(userLat, userLng, lat, lng);
           }
-        } catch {
-          // Fallback to default name
         }
+      } catch {
+        // Fallback to standard facility name
       }
 
       facilityExtra = { category, name, distance: distStr };
@@ -217,7 +226,22 @@ export const mockConversationApi = {
           latitude: lat,
           longitude: lng,
           phone,
-          availability: 'Open · 24x7 Staffed',
+          availability: 'Open · Free Community Charity Seva (Available)',
+          isCharity: true,
+        },
+      }];
+    } else if (query.includes('palkhi') || query.includes('पालखी') || query.includes('पालकी') || query.includes('palki') || query.includes('track palkhi')) {
+      kind = 'palkhi';
+      widgets = [{
+        type: 'palkhi_location',
+        data: {
+          latitude: request.latitude ?? 17.6792,
+          longitude: request.longitude ?? 75.3278,
+          currentPlace: 'Wakhari Ringan Ground',
+          nextPlace: 'Pandharpur Temple Precinct',
+          etaMinutes: 20,
+          updatedAt: 'Just now',
+          isSimulated: true,
         },
       }];
     } else if (
@@ -282,6 +306,142 @@ export const mockConversationApi = {
       language,
       responseText: language === 'mr' ? 'मदतीची विनंती पाठवली आहे.' : language === 'hi' ? 'मदद की request भेज दी गई है।' : 'Help has been requested.',
       widgets: [{ type: 'sos', data: { status: 'ACTIVATED', message: language === 'mr' ? 'मदतीची विनंती पाठवली आहे.' : language === 'hi' ? 'मदद की request भेज दी गई है।' : 'Help has been requested.', controlRoomStatus: 'Connected', timestamp: now() } }],
+    };
+  },
+};
+
+export const mockIvrApi = {
+  async start(input: { sessionId: string; language?: Language; latitude?: number | null; longitude?: number | null }): Promise<IVRTurn> {
+    const lang = input.language || 'en';
+    const prompts = {
+      mr: 'वारीव्हर्स डिजिटल हेल्पलाइनमध्ये आपले स्वागत आहे. गर्दीच्या माहितीसाठी १ दाबा, दर्शन वेळेसाठी २ दाबा, जवळील मोफत सेवेसाठी ३ दाबा, किंवा आपत्कालीन मदतीसाठी ४ दाबा. आपण बोलण्यासाठी बटण दाबून धरू शकता.',
+      hi: 'वारीव्हर्स डिजिटल हेल्पलाइन में आपका स्वागत है। भीड़ की स्थिति के लिए 1 दबाएं, दर्शन समय के लिए 2 दबाएं, पास की सेवाओं के लिए 3 दबाएं, या आपातकालीन सहायता के लिए 4 दबाएं। आप बोलने के लिए बटन दबाकर भी रख सकते हैं।',
+      en: 'Welcome to WariVerse Helpline. Press 1 for Live Crowd Density, 2 for Temple Schedule & Timings, 3 for Nearby Seva & Facilities, 4 for Emergency SOS, or hold the button to speak.',
+    };
+    return {
+      sessionId: input.sessionId,
+      state: 'menu',
+      language: lang,
+      prompt: prompts[lang] || prompts.en,
+      audioBase64: null,
+      mediaType: 'audio/mpeg',
+      options: [
+        { key: '1', label: lang === 'mr' ? '१ · गर्दीची माहिती' : lang === 'hi' ? '1 · भीड़ की स्थिति' : '1 · Live Crowd Status' },
+        { key: '2', label: lang === 'mr' ? '२ · दर्शन व आरती वेळ' : lang === 'hi' ? '2 · दर्शन समय' : '2 · Temple Schedule' },
+        { key: '3', label: lang === 'mr' ? '३ · जवळील सुविधा' : lang === 'hi' ? '3 · पास की सुविधाएं' : '3 · Nearby Seva & Facilities' },
+        { key: '4', label: lang === 'mr' ? '४ · आपत्कालीन SOS' : lang === 'hi' ? '4 · आपातकालीन SOS' : '4 · Emergency SOS' },
+      ],
+      endsSession: false,
+    };
+  },
+
+  async press(input: { sessionId: string; key: string; latitude?: number | null; longitude?: number | null; turnId?: string }): Promise<IVRTurn> {
+    const lang: Language = 'en';
+    if (input.key === '1') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'Live Crowd Status: Mukhdarshan Queue is LOW (25% capacity, 15-20 min wait). Gate 2 North is MODERATE (52%). Padsparsha Queue is HIGH (78% capacity, 2-3 hrs wait). Gate 3 South is HEAVY (82%). Recommended fast route: Mukhdarshan Queue.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Refresh Crowd' },
+          { key: '2', label: '2 · Temple Schedule' },
+          { key: '3', label: '3 · Nearby Seva' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [
+          crowdWidget('mukhdarshan-queue', 'Mukhdarshan Queue (15-20 min)', 25, 'LOW', 17.6782, 75.3288),
+          crowdWidget('darshan-mandap-token', 'Sant Dnyaneshwar Darshan Mandap', 45, 'MODERATE', 17.6798, 75.3292),
+          crowdWidget('padsparsha-queue', 'Padsparsha Touch Darshan Queue', 78, 'HIGH', 17.6773, 75.3312),
+          crowdWidget('gate-3', 'Gate 3 (South Entrance)', 82, 'HIGH', 17.6779, 75.3301),
+        ],
+        endsSession: false,
+      };
+    }
+    if (input.key === '2') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'Shri Vitthal Mandir Pandharpur is open 24 Hours for Ashadhi Ekadashi 2026. Mukhdarshan queue is 15-20 min. Padsparsha queue is 2-3 hrs standard.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Crowd Status' },
+          { key: '3', label: '3 · Nearby Facilities' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [{
+          type: 'temple_info',
+          data: {
+            title: 'Shri Vitthal Rukmini Mandir 2026 Schedule',
+            timings: 'Open 24 Hours (Ashadhi Ekadashi Special)',
+            rituals: ['Kakad Aarti · 4:30 AM', 'Mahapuja · 12:00 AM Midnight', 'Shej Aarti · 11:30 PM'],
+            events: ['Mukhdarshan Queue (15-20 min)', 'Padsparsha Sanctum Queue (2-3 hrs)'],
+            description: 'North entrance token passes available at Shri Sant Dnyaneshwar Darshan Mandap.',
+          },
+        }],
+        endsSession: false,
+      };
+    }
+    if (input.key === '3') {
+      return {
+        sessionId: input.sessionId,
+        state: 'menu',
+        language: lang,
+        prompt: 'The nearest facility is Wari Medical Center (0.8 km away). Water stations and Annachhatra food distribution are available along the palkhi route.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '1', label: '1 · Live Crowd Status' },
+          { key: '2', label: '2 · Temple Schedule' },
+          { key: '0', label: '0 · Back to Main Menu' },
+        ],
+        widgets: [facilityWidget()],
+        endsSession: false,
+      };
+    }
+    if (input.key === '4') {
+      return {
+        sessionId: input.sessionId,
+        state: 'sos_confirm',
+        language: lang,
+        prompt: 'Emergency SOS requested. Wari Control Room and Solapur Rural Police have been notified. Stay calm near your location.',
+        audioBase64: null,
+        mediaType: 'audio/mpeg',
+        options: [
+          { key: '0', label: '0 · Main Menu' },
+        ],
+        widgets: [{
+          type: 'sos',
+          data: {
+            status: 'ACTIVATED',
+            message: 'Emergency SOS activated. Control room helpline 1800-233-1000 notified.',
+            controlRoomStatus: 'Connected · Dispatch Active',
+            timestamp: now(),
+          },
+        }],
+        endsSession: false,
+      };
+    }
+    return mockIvrApi.start({ sessionId: input.sessionId, language: lang });
+  },
+
+  async speak(input: { sessionId: string; audio: Blob; fileName?: string; turnId?: string }): Promise<IVRTurn> {
+    return {
+      sessionId: input.sessionId,
+      state: 'speech',
+      language: 'en',
+      prompt: 'I understand your query. The nearest water point and medical assistance is located 500m ahead near Gate 2.',
+      audioBase64: null,
+      mediaType: 'audio/mpeg',
+      options: [
+        { key: '0', label: '0 · Back to Menu' },
+      ],
+      widgets: [facilityWidget()],
+      endsSession: false,
     };
   },
 };

@@ -25,6 +25,8 @@ pytestmark = pytest.mark.skipif(
 def keys(monkeypatch):
     monkeypatch.setattr(settings, "elevenlabs_api_key", "el-key", raising=False)
     monkeypatch.setattr(settings, "google_tts_api_key", "g-key", raising=False)
+    # Exercises the multi-provider path; production is OpenAI-only.
+    monkeypatch.setattr(settings, "voice_openai_only", False, raising=False)
 
 
 @pytest.fixture

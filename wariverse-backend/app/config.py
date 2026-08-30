@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     # English accent. See the note in app/services/tts.py.
     openai_tts_model: str = "tts-1"
     openai_tts_voice: str = "alloy"
+    # OpenAI is the sole voice provider: Whisper in, `tts-1` out, everywhere.
+    # Deepgram, ElevenLabs and Google WaveNet remain implemented and tested —
+    # set this false to put them back in the chain — but nothing reaches for
+    # them while it is on, so one key powers the whole voice pipeline.
+    voice_openai_only: bool = True
     tts_cache_ttl_seconds: int = 86_400  # 24 hours
     tts_max_characters: int = 1000
     # Static IVR menu prompts get their own, much longer TTL. Their text only

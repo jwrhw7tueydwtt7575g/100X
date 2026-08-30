@@ -208,16 +208,23 @@ export default function SettingsScreen() {
             setIsWithdrawing(item.id);
             try {
               await communityApi.withdraw(item.id, item.manageToken);
-              const updated = mySevas.filter((s) => s.id !== item.id);
-              await saveSevas(updated);
-              Alert.alert('Seva Withdrawn', 'Your offering has been removed.');
             } catch {
-              // Even if server request fails, remove locally
-              const updated = mySevas.filter((s) => s.id !== item.id);
-              await saveSevas(updated);
-            } finally {
-              setIsWithdrawing(null);
+              // Server fallback handling
             }
+            const updated = mySevas.filter((s) => s.id !== item.id);
+            await saveSevas(updated);
+
+            // Completely clear form inputs and close modal
+            setTitle('');
+            setAddress('');
+            setProviderName('');
+            setContactPhone('');
+            setSelectedLat(null);
+            setSelectedLng(null);
+            setIsModalVisible(false);
+
+            Alert.alert('Seva Withdrawn & Form Cleared 🗑️', 'Your charity service offering and form details have been completely removed.');
+            setIsWithdrawing(null);
           },
         },
       ]

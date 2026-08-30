@@ -150,45 +150,93 @@ export const speechService: SpeechService = {
 
 let activeAudioElement: HTMLAudioElement | null = null;
 
+const isWeb = typeof window !== 'undefined' && typeof document !== 'undefined';
+
+/** Speak through the device. Resolves once speaking has finished or failed. */
+export async function speakOnDevice(text: string, language: Language): Promise<boolean> {
+  const spoken = text.trim();
+  if (!spoken) return false;
+
+  try {
+    // @ts-ignore
+    const Speech = await import('expo-speech');
+    await new Promise<void>((resolve) => {
+      Speech.speak(spoken, {
+        language: languageTag[language] || 'en-IN',
+        rate: 0.95,
+        onDone: () => resolve(),
+        onStopped: () => resolve(),
+        onError: () => resolve(),
+      });
+    });
+    return true;
+  } catch (error) {
+    console.warn('[tts] expo-speech unavailable', error);
+  }
+
+  // Last resort for a browser where expo-speech failed to load.
+  if (isWeb && 'speechSynthesis' in window) {
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    utterance.lang = languageTag[language] || 'en-IN';
+    window.speechSynthesis.speak(utterance);
+    return true;
+  }
+  return false;
+}
+
+/** Silence whatever is currently being said, on any platform. */
+export async function stopSpeaking(): Promise<void> {
+  if (activeAudioElement) {
+    try {
+      activeAudioElement.pause();
+    } catch {
+      // Already detached.
+    }
+    activeAudioElement = null;
+  }
+  try {
+    // @ts-ignore
+    const Speech = await import('expo-speech');
+    Speech.stop();
+  } catch {
+    // Not loadable here; the web branch below still applies.
+  }
+  if (isWeb && 'speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+  }
+}
+
+/** The server's MP3 for this text, or null if it could not be played. */
+async function playServerAudio(text: string, language: Language): Promise<boolean> {
+  if (!isWeb || typeof Audio === 'undefined') return false;
+
+  const url =
+    `${getApiBaseUrl()}/api/voice/speak` +
+    `?text=${encodeURIComponent(text)}&language=${encodeURIComponent(language)}`;
+
+  try {
+    const audio = new Audio(url);
+    activeAudioElement = audio;
+    await audio.play();
+    return true;
+  } catch (error) {
+    console.warn('[tts] server audio unavailable, using the device voice', error);
+    activeAudioElement = null;
+    return false;
+  }
+}
+
 export const textToSpeechService: TextToSpeechService = {
   async speak(text: string, language: Language) {
-    if (typeof window === 'undefined') return;
+    const spoken = (text ?? '').trim();
+    if (!spoken) return;
 
-    if (activeAudioElement) {
-      activeAudioElement.pause();
-      activeAudioElement = null;
-    }
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-
-    if (text && text.trim()) {
-      try {
-        const audioUrl = `${getApiBaseUrl()}/api/voice/speak?text=${encodeURIComponent(text.trim())}&language=${encodeURIComponent(language)}`;
-        const audio = new Audio(audioUrl);
-        activeAudioElement = audio;
-        await audio.play();
-        return;
-      } catch (err) {
-        console.warn('Backend ElevenLabs/Google TTS playback failed, falling back to Web SpeechSynthesis:', err);
-      }
-    }
-
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = languageTag[language] || 'en-IN';
-      window.speechSynthesis.speak(utterance);
-    }
+    await stopSpeaking();
+    if (await playServerAudio(spoken, language)) return;
+    await speakOnDevice(spoken, language);
   },
+
   async stop() {
-    if (typeof window !== 'undefined') {
-      if (activeAudioElement) {
-        activeAudioElement.pause();
-        activeAudioElement = null;
-      }
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    }
+    await stopSpeaking();
   },
 };
